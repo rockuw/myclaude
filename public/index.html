@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#ffd440">
+<title>myclaude · Claude Code Web</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/vendor/hljs.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='1' width='14' height='14' rx='2' fill='%2327ccf3' stroke='%23141111' stroke-width='2'/><rect x='5' y='5' width='2' height='2' fill='%23141111'/><rect x='9' y='5' width='2' height='2' fill='%23141111'/><rect x='5' y='10' width='6' height='2' fill='%23141111'/></svg>">
+</head>
+<body>
+<div id="app">
+  <header id="app-header">
+    <div class="logo" id="logo-home" title="回到会话列表">
+      <svg class="logo-pixel" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="2" fill="#27ccf3" stroke="#141111" stroke-width="2"/><rect x="5" y="5" width="2" height="2" fill="#141111"/><rect x="9" y="5" width="2" height="2" fill="#141111"/><rect x="5" y="10" width="6" height="2" fill="#141111"/></svg>
+      MYCLAUDE <small>claude code web</small>
+    </div>
+    <div id="header-spacer"></div>
+    <span id="conn-dot" class="off"></span><span id="conn-label">连接中</span>
+    <button class="btn btn-pink btn-sm" id="btn-new-header">＋ 新建会话</button>
+  </header>
+
+  <main id="view-home">
+    <div class="container">
+      <div class="home-hero">
+        <div>
+          <h1>Where humans and<br>Claude build together.</h1>
+          <p>在浏览器里使用 Claude Code · PC / 移动端</p>
+        </div>
+        <button class="btn btn-pink" id="btn-new-home">＋ 新建会话</button>
+      </div>
+      <div id="active-section"></div>
+      <div class="section-title">历史会话</div>
+      <div id="history-list"><div class="empty-note">加载中…</div></div>
+    </div>
+  </main>
+
+  <main id="view-chat">
+    <div id="chat-header">
+      <button class="btn btn-sm" id="btn-back" title="返回列表">←</button>
+      <div id="chat-title">会话</div>
+      <div id="chat-badges"></div>
+      <div id="chat-actions">
+        <button class="btn btn-sm btn-orange" id="btn-stop" style="display:none">■ 停止</button>
+        <button class="btn btn-sm" id="btn-exit">退出会话</button>
+      </div>
+    </div>
+    <div id="messages-wrap">
+      <div id="messages"><div class="msg-container" id="msg-container"></div></div>
+      <button id="jump-bottom">↓ 新消息</button>
+    </div>
+    <div id="composer">
+      <div class="composer-inner">
+        <textarea id="input" rows="1" placeholder="给 Claude 发消息…" enterkeyhint="send"></textarea>
+        <button class="btn btn-pink" id="btn-send">发送 ➤</button>
+      </div>
+      <div class="composer-hint">
+        <span class="hint-desktop">Enter 发送 · Shift+Enter 换行</span>
+        <span id="composer-status"></span>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="modal-overlay">
+  <div class="modal" id="modal-new">
+    <h2>新建会话</h2>
+    <div class="modal-sub">选择模型配置、工作目录与权限模式</div>
+    <label class="field-label">Settings 配置（~/.claude/settings.*）</label>
+    <div class="settings-list" id="settings-list"></div>
+    <label class="field-label" for="cwd-input">工作目录</label>
+    <input class="text-input" id="cwd-input" list="dirs-list" placeholder="/home/rockuw" spellcheck="false">
+    <datalist id="dirs-list"></datalist>
+    <label class="field-label" for="mode-select">权限模式</label>
+    <select class="select-input" id="mode-select">
+      <option value="bypassPermissions">跳过权限检查（bypassPermissions）</option>
+      <option value="acceptEdits">自动接受编辑（acceptEdits）</option>
+      <option value="manual">每次询问（manual）</option>
+      <option value="plan">计划模式（plan）</option>
+    </select>
+    <div class="mode-desc" id="mode-desc">所有工具调用直接执行，适合可信的本机环境。</div>
+    <div class="modal-actions">
+      <button class="btn" id="btn-cancel-new">取消</button>
+      <button class="btn btn-pink" id="btn-create">创建会话 ➤</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/highlight.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
