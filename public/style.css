@@ -355,7 +355,7 @@ body.chatting #btn-new-header { display: none; }
   .session-card .sc-title { font-size: 14.5px; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   #chat-header { padding: 7px 10px; gap: 7px; }
   #btn-back { order: 0; }
-  #chat-title { font-size: 13.5px; order: 1; flex: 1; flex-basis: auto; }
+  #chat-title { font-size: 13.5px; order: 1; flex: 1 1 0; min-width: 0; }
   #chat-actions { order: 2; margin-left: auto; }
   #chat-badges { order: 3; flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
   #chat-badges::-webkit-scrollbar { display: none; }
@@ -367,7 +367,7 @@ body.chatting #btn-new-header { display: none; }
   .msg-user .msg-content { font-size: 14px; padding: 8px 11px; }
   .codeblock code { font-size: 11.5px; }
   .codeblock pre { padding: 10px; }
-  .result-row { margin-left: 34px; }
+  .result-row { margin-left: 34px; font-size: 10px; gap: 8px; }
   #composer { padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
   #btn-send { padding: 0 15px; }
   .composer-hint .hint-desktop { display: none; }

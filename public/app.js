@@ -317,7 +317,7 @@ async function loadHistoryThenAttach(id) {
 function resetChat() {
   $('#msg-container').innerHTML = '';
   S = {
-    uuids: new Set(), msgs: new Map(), tools: new Map(), perms: new Map(),
+    uuids: new Set(), seenSeq: new Set(), msgs: new Map(), tools: new Map(), perms: new Map(),
     blockNodes: new Map(), dirty: new Set(), raf: 0,
     nearBottom: true, typing: null, titleSet: false,
   };
@@ -338,6 +338,7 @@ function updateChatHeader() {
   const meta = current.meta || {};
   const title = info.title || meta.title || (current.readOnly ? '历史会话' : '新会话');
   $('#chat-title').textContent = title;
+  $('#chat-title').title = title;
   const badges = $('#chat-badges');
   badges.innerHTML = '';
   const status = current.readOnly ? 'exited' : (info.status || 'starting');
@@ -403,6 +404,11 @@ function setChatTitleFromText(text) {
 
 function renderEvent(ev) {
   if (!S) return;
+  // stored events carry a seq; replays (reconnect / re-attach) must not duplicate
+  if (ev.seq != null) {
+    if (S.seenSeq.has(ev.seq)) return;
+    S.seenSeq.add(ev.seq);
+  }
   switch (ev.k) {
     case 'user': return renderUser(ev);
     case 'assistant': return renderAssistant(ev);

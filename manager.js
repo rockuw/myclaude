@@ -86,6 +86,8 @@ class Manager {
 
   emit(s, ev, { store = true } = {}) {
     if (store) {
+      // stable seq lets clients dedupe replays after reconnect/attach
+      ev.seq = s.seq = (s.seq || 0) + 1;
       s.events.push(ev);
       if (s.events.length > 8000) s.events.splice(0, s.events.length - 8000);
     }
