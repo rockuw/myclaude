@@ -103,9 +103,6 @@ function renderMarkdown(text) {
 // ---------------- state ----------------
 let ws = null, wsRetry = 0;
 let settingsCache = null, dirsCache = null;
-// rendered-view cache: leaving a session keeps its DOM + render state so
-// reopening is instant; history growth is synced incrementally via stamp
-const viewCache = new Map();
 let sessionsData = { active: [], history: [] };
 let current = null;   // {id, info, readOnly, meta}
 let S = null;         // per-chat render state
@@ -156,20 +153,20 @@ function handleWS(m) {
       }
       break;
     case 'created': {
-      const cached = usableCache(m.session.id);
-      if (cached) {
-        restoreView(cached);
-        current.readOnly = false;
+      if (current && current.id === m.session.id && S) {
+        // resume/create flow already reset + showed loading: keep it until
+        // history finishes rendering (a second resetChat would blank the view)
         current.info = m.session;
         current.spawnMode = m.session.mode;
+        current.readOnly = false;
         updateChatHeader();
-        loadHistoryThenAttach(m.session.id, cached.stamp);
       } else {
         current = { id: m.session.id, info: m.session, readOnly: false, spawnMode: m.session.mode };
         enterChatView();
         resetChat();
-        loadHistoryThenAttach(m.session.id);
+        showLoading('正在加载会话…', '读取历史并连接实时流');
       }
+      loadHistoryThenAttach(m.session.id);
       break;
     }
     case 'attached':
@@ -298,66 +295,13 @@ function enterChatView() {
   document.body.classList.add('chatting');
   updateChatHeader();
 }
-function sessionStamp(id) {
-  const h = (sessionsData.history || []).find(x => x.id === id);
-  return h ? { mtime: h.mtime, size: h.size } : null;
-}
-function stampMatches(id, stamp) {
-  const now = sessionStamp(id);
-  return !!(stamp && now && now.mtime === stamp.mtime && now.size === stamp.size);
-}
-const VIEW_CONTENT_SEL = '.msg, .exit-banner, .system-row';
-function captureView() {
-  if (!current || !current.id || !S) return null;
-  const container = $('#msg-container');
-  // never cache an empty or still-loading view: it would poison reopen
-  if (!container.querySelector(VIEW_CONTENT_SEL)) return null;
-  container.remove();
-  return { id: current.id, container, S, current: { ...current } };
-}
-function usableCache(id) {
-  const v = viewCache.get(id);
-  if (!v) return null;
-  if (!v.container.querySelector(VIEW_CONTENT_SEL)) { viewCache.delete(id); return null; }
-  return v;
-}
-function putViewCache(v) {
-  if (!v) return;
-  v.stamp = sessionStamp(v.id);
-  viewCache.set(v.id, v);
-  if (viewCache.size > 4) viewCache.delete(viewCache.keys().next().value);
-}
-function restoreView(v) {
-  current = v.current;
-  S = v.S;
-  const wrap = $('#messages');
-  wrap.innerHTML = '';
-  wrap.appendChild(v.container);
-  document.body.classList.add('chatting');
-  hideLoading();
-  removeTyping();
-  updateChatHeader();
-  renderTaskPanel();
-  S.nearBottom = true;
-  scrollBottom(true);
-}
 function goHome() {
-  const stash = captureView();
   if (current && !current.readOnly) sendWS({ t: 'detach', id: current.id });
   current = null; S = null;
   document.body.classList.remove('chatting');
-  refreshSessions().then(() => putViewCache(stash));
+  refreshSessions();
 }
 function openActive(id) {
-  const cached = usableCache(id);
-  if (cached) {
-    restoreView(cached);
-    current.readOnly = false;
-    current.info = sessionsData.active.find(a => a.id === id) || current.info;
-    updateChatHeader();
-    loadHistoryThenAttach(id, cached.stamp);
-    return;
-  }
   current = { id, info: sessionsData.active.find(a => a.id === id), readOnly: false };
   enterChatView();
   resetChat();
@@ -372,25 +316,14 @@ function resumeSession(id, settings, force) {
   sendWS({ t: 'resume', id, settings, force });
 }
 function openReadOnly(id) {
-  const cached = usableCache(id);
-  if (cached) {
-    restoreView(cached);
-    current.readOnly = true;
-    updateChatHeader();
-    switchToReadOnly(id, cached.stamp);
-    return;
-  }
   current = { id, info: null, readOnly: true };
   enterChatView();
-  resetChat();
   switchToReadOnly(id);
 }
-async function switchToReadOnly(id, stamp) {
+async function switchToReadOnly(id) {
   current.readOnly = true;
-  if (stampMatches(id, stamp) && $('#msg-container').querySelector(VIEW_CONTENT_SEL)) {
-    updateChatHeader(); afterRender(true); return;
-  }
-  if (!viewCache.has(id)) { resetChat(); showLoading('正在加载历史会话…', '解析会话记录文件'); }
+  resetChat();
+  showLoading('正在加载历史会话…', '解析会话记录文件');
   await nextFrame();
   try {
     const r = await fetch('/api/sessions/' + id + '/messages');
@@ -407,22 +340,21 @@ async function switchToReadOnly(id, stamp) {
     afterRender(true);
   } catch (e) { hideLoading(); toast(e.message); goHome(); }
 }
-async function loadHistoryThenAttach(id, stamp) {
+async function loadHistoryThenAttach(id) {
   // Render persisted history first (uuid-deduped), then replay live buffer.
-  // With a matching stamp the cached view is already up to date: skip fetch.
-  if (!stampMatches(id, stamp)) {
-    await nextFrame();
-    try {
-      const r = await fetch('/api/sessions/' + id + '/messages');
-      if (r.ok) {
-        const data = await r.json();
-        current.meta = data;
-        if (data.title && current.info && !current.info.title) current.info.title = data.title;
-        for (const ev of data.events) renderEvent(ev);
-      }
-    } catch {}
+  await nextFrame();
+  try {
+    const r = await fetch('/api/sessions/' + id + '/messages');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    current.meta = data;
+    if (data.title && current.info && !current.info.title) current.info.title = data.title;
+    hideLoading();
+    for (const ev of data.events) renderEvent(ev);
+  } catch (e) {
+    hideLoading();
+    appendBanner('error', '⚠ 历史加载失败（' + e.message + '），实时流仍会连接；可返回列表重试。');
   }
-  hideLoading();
   sendWS({ t: 'attach', id });
   updateChatHeader();
   afterRender(true);
