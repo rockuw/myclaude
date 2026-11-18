@@ -53,6 +53,21 @@ browser ── WebSocket /ws ──> server.js (express + ws)
 前端为原生 JS SPA（`public/`），vendored 依赖：marked / DOMPurify / highlight.js，
 字体自托管（Space Grotesk / Space Mono），局域网内无需外网。
 
+## 网页会话内自重启（restart.sh）
+
+让网页里的 Claude 修改并重启本服务时，不能直接 `kill + start`：执行重启的 claude
+会话是 server 的子进程，server 退出会连带杀死它，重启链断在半路。
+
+`./restart.sh` 把 kill+start 序列放进 `setsid` 脱离的独立会话执行，旧 server 与
+claude 会话的死亡都不影响它：
+
+1. 会话内运行 `./restart.sh`（会话 env 里有 `MYCLAUDE_SESSION_ID`，会写 `data/restart.json` 标记）
+2. 旧 server 退出，当前会话随之结束（预期行为），独立进程拉起新 server
+3. 网页重连后该会话显示只读视图，点 **Resume** 直接继续（标记提供 120s 绿色通道，
+   跳过"会话仍在写入"安全锁，无需强制恢复），上下文保留
+
+终端里重启仍用 `./start.sh`（有 active 会话时拒绝，`FORCE=1` 越过）。
+
 ## 注意
 
 - 服务监听 `0.0.0.0`，**无鉴权**：仅建议在可信局域网使用；

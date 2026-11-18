@@ -107,9 +107,16 @@ function findSessionFile(id) {
 }
 
 // Parse a full session file into the same event shape the live manager emits.
+// Cached by mtime+size: resume parses once server-side and the client's
+// follow-up /messages fetch hits the cache instead of re-parsing megabytes.
+const msgCache = new Map();
 function getMessages(id) {
   const file = findSessionFile(id);
   if (!file) return null;
+  let st;
+  try { st = fs.statSync(file); } catch { return null; }
+  const hit = msgCache.get(id);
+  if (hit && hit.mtime === st.mtimeMs && hit.size === st.size) return hit.data;
   const events = [];
   let title = '', cwd = '', model = '', permMode = '', firstPrompt = '';
   const text = fs.readFileSync(file, 'utf8');
@@ -129,7 +136,10 @@ function getMessages(id) {
       events.push({ k: 'system', subtype: 'compact_boundary', ts });
     }
   }
-  return { id, title: title || firstPrompt, cwd, model, permMode, events };
+  const data = { id, title: title || firstPrompt, cwd, model, permMode, events };
+  msgCache.set(id, { mtime: st.mtimeMs, size: st.size, data });
+  if (msgCache.size > 30) msgCache.delete(msgCache.keys().next().value);
+  return data;
 }
 
 module.exports = { listSessions, getMessages, findSessionFile, PROJECTS_DIR };

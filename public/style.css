@@ -146,6 +146,14 @@ body.chatting #btn-new-header { display: none; }
 .chip-lavender { background: var(--lavender); }
 .chip-orange { background: var(--orange); }
 .chip-plain { background: var(--paper); }
+button.chip-mode { cursor: pointer; font-family: var(--font-mono); }
+button.chip-mode:hover:not(:disabled) { background: var(--lavender); transform: translate(-1px, -1px); box-shadow: 2px 2px 0 var(--ink); }
+button.chip-mode:disabled { cursor: default; opacity: .8; }
+#mode-menu { position: fixed; z-index: 150; display: none; flex-direction: column; gap: 4px; background: var(--paper); border: var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 6px; min-width: 150px; }
+.mode-opt { border: 1.5px solid transparent; background: transparent; border-radius: 6px; padding: 6px 10px; font-size: 12.5px; font-weight: 700; text-align: left; }
+.mode-opt:hover { background: var(--cream-dark); border-color: var(--ink); }
+.mode-opt.selected { background: var(--lavender); border-color: var(--ink); }
+.permcard-note { font-size: 12.5px; margin: 6px 0; }
 .dot { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--ink); flex: none; display: inline-block; }
 .dot-idle { background: var(--lime); }
 .dot-running { background: var(--yellow); animation: pulse 1s infinite; }
@@ -259,6 +267,10 @@ body.chatting #btn-new-header { display: none; }
 .permcard-title { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px; }
 .permcard pre { font-family: var(--font-mono); font-size: 11.5px; background: var(--paper); border: 1.5px solid var(--ink); border-radius: 6px; padding: 8px 10px; margin: 8px 0; max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: break-word; }
 .permcard-actions { display: flex; gap: 10px; margin-top: 8px; }
+.permcard-plan { background: var(--paper); border: 1.5px solid var(--ink); border-radius: 6px; padding: 10px 12px; margin: 8px 0; max-height: 340px; overflow-y: auto; font-size: 13.5px; }
+.permcard-plan .md h1 { font-size: 17px; }
+.permcard-plan .md h2 { font-size: 15px; }
+.permcard-plan .md h3 { font-size: 14px; }
 .permcard.resolved { opacity: .65; }
 .permcard.resolved .permcard-actions { display: none; }
 .permcard-result { font-family: var(--font-mono); font-size: 11.5px; font-weight: 700; margin-top: 6px; }
@@ -283,6 +295,31 @@ body.chatting #btn-new-header { display: none; }
   display: none;
 }
 #jump-bottom.show { display: block; }
+
+/* ---------- loading state ---------- */
+.loading-card {
+  display: flex; align-items: center; gap: 12px; justify-content: center;
+  border: var(--border); border-radius: var(--radius);
+  background: var(--paper); box-shadow: var(--shadow);
+  padding: 12px 18px; margin: 10px auto 20px; max-width: 440px;
+}
+.spinner-lg { width: 16px; height: 16px; border-width: 3px; flex: none; }
+.loading-text { font-weight: 700; font-size: 14px; }
+.loading-sub { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+.skeleton { opacity: .5; }
+.sk-msg { display: flex; gap: 10px; margin-bottom: 18px; }
+.sk-avatar { width: 30px; height: 30px; border: var(--border); border-radius: 6px; background: var(--cream-dark); flex: none; }
+.sk-body { flex: 1; min-width: 0; }
+.sk-line {
+  height: 12px; border-radius: 4px; margin-bottom: 8px;
+  border: 1px solid rgba(20,17,17,.15);
+  background: linear-gradient(90deg, var(--cream-dark) 25%, #efe4c8 50%, var(--cream-dark) 75%);
+  background-size: 200% 100%; animation: shimmer 1.2s linear infinite;
+}
+.sk-line.w40 { width: 40%; }
+.sk-line.w90 { width: 90%; }
+.sk-line.w70 { width: 70%; }
+@keyframes shimmer { to { background-position: -200% 0; } }
 
 /* ---------- composer ---------- */
 #composer { border-top: var(--border); background: var(--paper); padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
@@ -368,6 +405,9 @@ body.chatting #btn-new-header { display: none; }
   .codeblock code { font-size: 11.5px; }
   .codeblock pre { padding: 10px; }
   .result-row { margin-left: 34px; font-size: 10px; gap: 8px; }
+  .sk-avatar { width: 26px; height: 26px; }
+  .loading-card { padding: 10px 14px; gap: 10px; }
+  .loading-text { font-size: 13px; }
   #composer { padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
   #btn-send { padding: 0 15px; }
   .composer-hint .hint-desktop { display: none; }

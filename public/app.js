@@ -83,7 +83,7 @@ let sessionsData = { active: [], history: [] };
 let current = null;   // {id, info, readOnly, meta}
 let S = null;         // per-chat render state
 
-const MODE_LABEL = { bypassPermissions: '跳过权限', acceptEdits: '接受编辑', manual: '每次询问', plan: '计划模式', auto: '自动', dontAsk: '不询问' };
+const MODE_LABEL = { bypassPermissions: '跳过权限', acceptEdits: '接受编辑', manual: '每次询问', default: '每次询问', plan: '计划模式', auto: '自动', dontAsk: '不询问' };
 const STATUS_LABEL = { starting: '启动中', idle: '空闲', running: '运行中', waiting_permission: '等待授权', exited: '已退出', error: '错误' };
 const TOOL_ICON = { Bash: '>_', Read: '📄', Write: '✎', Edit: '✎', Grep: '🔍', Glob: '🗂', Task: '🤖', Agent: '🤖', WebSearch: '🌐', WebFetch: '🌐', TodoWrite: '☑', NotebookEdit: '📓', LSP: '⌘' };
 const TOOL_COLOR = { Bash: 'chip-lime', Read: 'chip-cyan', Write: 'chip-orange', Edit: 'chip-orange', Grep: 'chip-lavender', Glob: 'chip-lavender', Task: 'chip-pink', Agent: 'chip-pink', WebSearch: 'chip-cyan', WebFetch: 'chip-cyan', TodoWrite: 'chip-yellow' };
@@ -138,6 +138,7 @@ function handleWS(m) {
       if (!current || current.id !== m.session.id) break;
       current.info = m.session;
       updateChatHeader();
+      hideLoading();
       for (const ev of m.events) renderEvent(ev);
       afterRender();
       break;
@@ -150,6 +151,7 @@ function handleWS(m) {
     case 'error':
       toast(m.message || '出错了');
       if (current && m.id === current.id) {
+        hideLoading();
         const b = appendBanner('error', '⚠ ' + m.message);
         if (/强制恢复/.test(m.message || '')) {
           const btn = el('button', 'btn btn-sm btn-orange', '强制恢复');
@@ -267,13 +269,14 @@ function openActive(id) {
   current = { id, info: sessionsData.active.find(a => a.id === id), readOnly: false };
   enterChatView();
   resetChat();
+  showLoading('正在加载会话…', '读取历史并连接实时流');
   loadHistoryThenAttach(id);
 }
 function resumeSession(id, settings, force) {
   current = { id, info: null, readOnly: false };
   enterChatView();
   resetChat();
-  appendBanner('info', '正在恢复会话…');
+  showLoading('正在恢复会话…', '启动 claude 进程并加载历史');
   sendWS({ t: 'resume', id, settings, force });
 }
 function openReadOnly(id) {
@@ -285,11 +288,14 @@ function openReadOnly(id) {
 async function switchToReadOnly(id) {
   current.readOnly = true;
   resetChat();
+  showLoading('正在加载历史会话…', '解析会话记录文件');
+  await nextFrame();
   try {
     const r = await fetch('/api/sessions/' + id + '/messages');
     if (!r.ok) throw new Error('会话不存在');
     const data = await r.json();
     current.meta = data;
+    hideLoading();
     for (const ev of data.events) renderEvent(ev);
     const banner = appendBanner('readonly', '历史会话 · 只读视图');
     const btn = el('button', 'btn btn-sm btn-lime', '▶ Resume 继续此会话');
@@ -297,10 +303,11 @@ async function switchToReadOnly(id) {
     banner.appendChild(btn);
     updateChatHeader();
     afterRender(true);
-  } catch (e) { toast(e.message); goHome(); }
+  } catch (e) { hideLoading(); toast(e.message); goHome(); }
 }
 async function loadHistoryThenAttach(id) {
   // Render persisted history first (uuid-deduped), then replay live buffer.
+  await nextFrame();
   try {
     const r = await fetch('/api/sessions/' + id + '/messages');
     if (r.ok) {
@@ -310,6 +317,7 @@ async function loadHistoryThenAttach(id) {
       for (const ev of data.events) renderEvent(ev);
     }
   } catch {}
+  hideLoading();
   sendWS({ t: 'attach', id });
   updateChatHeader();
   afterRender(true);
@@ -323,6 +331,40 @@ function resetChat() {
   };
   $('#jump-bottom').classList.remove('show');
   updateComposerState();
+}
+function showLoading(text, sub) {
+  hideLoading();
+  const box = el('div', 'loading-wrap');
+  box.id = 'loading-box';
+  const card = el('div', 'loading-card');
+  card.appendChild(el('span', 'spinner spinner-lg'));
+  const txt = el('div');
+  txt.appendChild(el('div', 'loading-text', esc(text)));
+  if (sub) txt.appendChild(el('div', 'loading-sub', esc(sub)));
+  card.appendChild(txt);
+  box.appendChild(card);
+  const sk = el('div', 'skeleton');
+  for (let i = 0; i < 3; i++) {
+    const row = el('div', 'sk-msg');
+    row.appendChild(el('div', 'sk-avatar'));
+    const body = el('div', 'sk-body');
+    body.appendChild(el('div', 'sk-line w40'));
+    body.appendChild(el('div', 'sk-line w90'));
+    body.appendChild(el('div', 'sk-line w70'));
+    row.appendChild(body);
+    sk.appendChild(row);
+  }
+  box.appendChild(sk);
+  $('#msg-container').appendChild(box);
+  scrollBottom(true);
+}
+function hideLoading() {
+  const n = document.getElementById('loading-box');
+  if (n) n.remove();
+}
+// let the loading state paint before heavy fetch/parse/render work begins
+function nextFrame() {
+  return new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 }
 function appendBanner(kind, text) {
   const b = el('div', 'exit-banner');
@@ -350,7 +392,13 @@ function updateChatHeader() {
   const model = info.model || meta.model;
   if (model) badges.appendChild(el('span', 'chip chip-cyan', esc(model)));
   if (info.settings) badges.appendChild(el('span', 'chip chip-yellow', esc(info.settings)));
-  if (info.mode) badges.appendChild(el('span', 'chip chip-lavender', esc(MODE_LABEL[info.mode] || info.mode)));
+  if (info.mode) {
+    const modeChip = el('button', 'chip chip-lavender chip-mode', esc(MODE_LABEL[info.mode] || info.mode) + ' ▾');
+    modeChip.title = '切换权限模式（相当于 CLI 的 Shift+Tab）';
+    if (!current.readOnly && status !== 'exited' && status !== 'error') modeChip.onclick = e => { e.stopPropagation(); openModeMenu(modeChip); };
+    else modeChip.disabled = true;
+    badges.appendChild(modeChip);
+  }
   const cwd = info.cwd || meta.cwd;
   if (cwd) badges.appendChild(el('span', 'chip chip-plain', esc(shortPath(cwd))));
   $('#btn-stop').style.display = (!current.readOnly && (status === 'running' || status === 'waiting_permission')) ? '' : 'none';
@@ -417,7 +465,14 @@ function renderEvent(ev) {
     case 'permission': return renderPermission(ev);
     case 'permission_resolved': return resolvePermission(ev);
     case 'init':
-      if (current && current.info) { current.info.model = ev.model || current.info.model; updateChatHeader(); }
+      if (current && current.info) {
+        current.info.model = ev.model || current.info.model;
+        current.info.mode = ev.permissionMode || current.info.mode;
+        updateChatHeader();
+      }
+      break;
+    case 'mode':
+      if (current && current.info) { current.info.mode = ev.mode; updateChatHeader(); }
       break;
     case 'status':
       if (current && current.info && !current.readOnly) {
@@ -694,15 +749,29 @@ function renderResult(ev) {
 }
 function renderPermission(ev) {
   removeTyping();
+  const isPlan = ev.toolName === 'ExitPlanMode';
+  const isEnterPlan = ev.toolName === 'EnterPlanMode';
   const card = el('div', 'permcard');
-  card.appendChild(el('div', 'permcard-title', '🔐 权限请求 · <span style="font-family:var(--font-mono)">' + esc(ev.toolName) + '</span>'));
-  let pretty;
-  try { pretty = JSON.stringify(ev.input, null, 2); } catch { pretty = String(ev.input); }
-  if (ev.toolName === 'Bash' && ev.input && ev.input.command) pretty = ev.input.command;
-  card.appendChild(el('pre', '', esc(pretty)));
+  card.appendChild(el('div', 'permcard-title', isPlan
+    ? '📋 计划待批准 · 批准后开始执行'
+    : isEnterPlan
+      ? '📋 Claude 请求进入计划模式'
+      : '🔐 权限请求 · <span style="font-family:var(--font-mono)">' + esc(ev.toolName) + '</span>'));
+  if (isPlan) {
+    const box = el('div', 'permcard-plan');
+    box.appendChild(renderMarkdown((ev.input && ev.input.plan) || ''));
+    card.appendChild(box);
+  } else if (isEnterPlan) {
+    card.appendChild(el('div', 'permcard-note', '批准后进入只读计划模式：Claude 只探索不修改，产出计划后再弹「计划待批准」卡片由你确认执行。'));
+  } else {
+    let pretty;
+    try { pretty = JSON.stringify(ev.input, null, 2); } catch { pretty = String(ev.input); }
+    if (ev.toolName === 'Bash' && ev.input && ev.input.command) pretty = ev.input.command;
+    card.appendChild(el('pre', '', esc(pretty)));
+  }
   const actions = el('div', 'permcard-actions');
-  const allow = el('button', 'btn btn-sm btn-lime', '✓ 允许');
-  const deny = el('button', 'btn btn-sm btn-red', '✗ 拒绝');
+  const allow = el('button', 'btn btn-sm btn-lime', isPlan ? '✓ 批准执行' : isEnterPlan ? '✓ 进入计划模式' : '✓ 允许');
+  const deny = el('button', 'btn btn-sm btn-red', isPlan ? '✗ 拒绝计划' : isEnterPlan ? '✗ 保持当前模式' : '✗ 拒绝');
   allow.onclick = () => sendWS({ t: 'perm', id: current.id, requestId: ev.requestId, allow: true });
   deny.onclick = () => sendWS({ t: 'perm', id: current.id, requestId: ev.requestId, allow: false });
   actions.append(allow, deny);
@@ -790,7 +859,7 @@ const MODE_DESC = {
   bypassPermissions: '所有工具调用直接执行，适合可信的本机环境。',
   acceptEdits: '文件编辑自动通过；Bash 等其它工具会弹出授权卡片。',
   manual: '每个工具调用都会弹出授权卡片，由你允许或拒绝。',
-  plan: '只读规划模式，Claude 先给出计划而不执行修改。',
+  plan: '只读规划模式：Claude 先探索代码并产出计划，弹出计划卡片，批准后才开始执行。',
 };
 async function openNewModal() {
   const [settings, dirs] = await Promise.all([loadSettings(), loadDirs()]);
@@ -844,8 +913,37 @@ function resetChatPending() {
   current = { id: null, info: null, readOnly: false };
   enterChatView();
   resetChat();
-  appendBanner('info', '正在启动 claude 进程…');
+  showLoading('正在创建会话…', '启动 claude 进程');
 }
+
+// ---------------- mode switch menu (Shift+Tab equivalent) ----------------
+const modeMenu = el('div');
+modeMenu.id = 'mode-menu';
+document.body.appendChild(modeMenu);
+function closeModeMenu() { modeMenu.style.display = 'none'; }
+function openModeMenu(anchor) {
+  if (!current || !current.info) return;
+  const cur = current.info.mode;
+  modeMenu.innerHTML = '';
+  for (const m of ['manual', 'acceptEdits', 'plan']) {
+    const b = el('button', 'mode-opt' + (m === cur ? ' selected' : ''), esc(MODE_LABEL[m]));
+    b.onclick = () => {
+      closeModeMenu();
+      if (sendWS({ t: 'mode', id: current.id, mode: m })) {
+        current.info.mode = m; // optimistic; server rolls back via mode event on CLI error
+        updateChatHeader();
+      }
+    };
+    modeMenu.appendChild(b);
+  }
+  const r = anchor.getBoundingClientRect();
+  modeMenu.style.display = 'flex';
+  modeMenu.style.left = Math.max(8, Math.min(window.innerWidth - 158, r.left)) + 'px';
+  modeMenu.style.top = (r.bottom + 6) + 'px';
+}
+document.addEventListener('click', e => {
+  if (!modeMenu.contains(e.target) && !e.target.closest('.chip-mode')) closeModeMenu();
+});
 
 // ---------------- boot ----------------
 connect();

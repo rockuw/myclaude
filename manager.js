@@ -9,6 +9,7 @@ const history = require('./history');
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claude');
 const META_FILE = path.join(__dirname, 'data', 'sessions.json');
+const RESTART_FILE = path.join(__dirname, 'data', 'restart.json');
 
 function listSettings() {
   const out = [];
@@ -125,7 +126,17 @@ class Manager {
     // Safety: a transcript written seconds ago is likely live in another
     // terminal/process; resuming it would fork a running conversation.
     const oursExited = existing && (existing.status === 'exited' || existing.status === 'error');
-    if (!force && !oursExited) {
+    // a session that triggered ./restart.sh died with the old server by design;
+    // let it resume without the freshness guard / force click
+    let viaRestart = false;
+    try {
+      const marker = JSON.parse(fs.readFileSync(RESTART_FILE, 'utf8'));
+      if (marker.id === id && Date.now() - marker.at < 120000) {
+        viaRestart = true;
+        fs.unlinkSync(RESTART_FILE);
+      }
+    } catch {}
+    if (!force && !oursExited && !viaRestart) {
       const file = history.findSessionFile(id);
       try {
         const age = Date.now() - fs.statSync(file).mtimeMs;
@@ -167,16 +178,19 @@ class Manager {
     const proc = spawn('claude', args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli' },
+      env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'cli', MYCLAUDE_SESSION_ID: id },
     });
     const s = {
       id, proc, cwd, settingsFile: settings, permissionMode: mode,
-      // resumed CLIs defer init until the first stdin message; they accept input right away
-      status: resumed ? 'idle' : 'starting', model: '', title: title || '', resumed,
+      // CLIs in -p stream-json mode defer init until the first stdin message;
+      // they accept input right away, so never show a blocking "starting" state
+      status: 'idle', model: '', title: title || '', resumed,
       createdAt: Date.now(), events: [], subscribers: new Set(),
       pending: new Map(), stderrTail: '', gotResult: false,
     };
     this.sessions.set(id, s);
+    // SDK-style handshake up front: the control channel must be ready before any turn
+    this._write(s, { type: 'control_request', request_id: 'init_' + s.id, request: { subtype: 'initialize' } });
     this.meta[id] = { settings, mode, cwd, pid: proc.pid, title: s.title, updatedAt: Date.now() };
     this._saveMeta();
 
@@ -215,12 +229,18 @@ class Manager {
     switch (j.type) {
       case 'system':
         if (j.subtype === 'init') {
-          s.model = j.model || '';
+          // CLI re-emits init on permission-mode changes (set_permission_mode,
+          // EnterPlanMode / ExitPlanMode approvals) — keep our badge in sync
+          const cliMode = j.permissionMode || '';
+          const mode = cliMode === 'default' ? 'manual' : (cliMode || s.permissionMode);
+          const modeChanged = mode !== s.permissionMode;
+          s.permissionMode = mode;
+          s.model = j.model || s.model;
           s.status = 'idle';
-          s.initInfo = { model: j.model, version: j.claude_code_version, permissionMode: j.permissionMode, tools: (j.tools || []).length };
+          if (modeChanged && this.meta[s.id]) { this.meta[s.id].mode = mode; this._saveMeta(); }
+          s.initInfo = { model: s.model, version: j.claude_code_version, permissionMode: mode, tools: (j.tools || []).length };
           this.emit(s, { k: 'init', ...s.initInfo, cwd: j.cwd });
-          // SDK-style handshake so the CLI routes permission prompts to stdio
-          this._write(s, { type: 'control_request', request_id: 'init_' + s.id, request: { subtype: 'initialize' } });
+          if (modeChanged) this.emit(s, { k: 'mode', mode });
           this.notifySessions();
         } else if (j.subtype === 'status') {
           if (j.status === 'requesting') s.status = 'running';
@@ -254,7 +274,18 @@ class Manager {
         this._handleControlRequest(s, j);
         break;
       case 'control_response':
-        break; // ack for our interrupt requests
+        if (s.modeReq && j.response && j.response.request_id === s.modeReq.id) {
+          if (j.response.subtype === 'error') {
+            s.permissionMode = s.modeReq.prev; // roll back optimistic UI
+            this.emit(s, { k: 'mode', mode: s.permissionMode });
+            this.emit(s, { k: 'error', message: '模式切换失败: ' + (j.response.error || 'CLI 拒绝') });
+            this.notifySessions();
+          }
+          s.modeReq = null;
+        } else if (j.response && j.response.subtype === 'error') {
+          this.emit(s, { k: 'error', message: '控制请求失败: ' + (j.response.error || JSON.stringify(j.response).slice(0, 120)) });
+        }
+        break; // acks for interrupt / set_permission_mode (mode arrives via init)
       default:
         break;
     }
@@ -310,6 +341,18 @@ class Manager {
     this._write(s, { type: 'control_request', request_id: 'int_' + crypto.randomUUID(), request: { subtype: 'interrupt' } });
   }
 
+  // Mid-session permission mode switch (CLI Shift+Tab equivalent).
+  // bypassPermissions is only offered at creation time.
+  setMode(id, mode) {
+    const s = this.sessions.get(id);
+    if (!s) throw new Error('会话不存在');
+    if (s.status === 'exited' || s.status === 'error') throw new Error('会话已结束');
+    if (!['manual', 'acceptEdits', 'plan'].includes(mode)) throw new Error('不支持的模式: ' + mode);
+    const requestId = 'mode_' + crypto.randomUUID();
+    s.modeReq = { id: requestId, prev: s.permissionMode };
+    this._write(s, { type: 'control_request', request_id: requestId, request: { subtype: 'set_permission_mode', mode: mode === 'manual' ? 'default' : mode } });
+  }
+
   permission(id, requestId, allow, updatedInput) {
     const s = this.sessions.get(id);
     if (!s) return;
@@ -320,6 +363,15 @@ class Manager {
       ? { behavior: 'allow', updatedInput: updatedInput || p.input }
       : { behavior: 'deny', message: '用户拒绝了此操作' };
     this._write(s, { type: 'control_response', response: { subtype: 'success', request_id: requestId, response } });
+    // mode transitions also arrive via re-emitted init; update eagerly for snappy UI
+    if (allow && (p.toolName === 'EnterPlanMode' || p.toolName === 'ExitPlanMode')) {
+      const m = p.toolName === 'EnterPlanMode' ? 'plan' : 'manual';
+      if (s.permissionMode !== m) {
+        s.permissionMode = m;
+        if (this.meta[s.id]) { this.meta[s.id].mode = m; this._saveMeta(); }
+        this.emit(s, { k: 'mode', mode: m });
+      }
+    }
     this.emit(s, { k: 'permission_resolved', requestId, behavior: allow ? 'allow' : 'deny' });
     if (s.pending.size === 0 && s.status === 'waiting_permission') s.status = 'running';
     this.notifySessions();

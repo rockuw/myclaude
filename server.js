@@ -18,6 +18,8 @@ app.use(express.json());
 
 app.get('/api/settings', (req, res) => res.json(listSettings()));
 
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+
 app.get('/api/sessions', (req, res) => {
   const active = manager.activeInfos();
   const activeIds = new Set(active.map(s => s.id));
@@ -78,6 +80,9 @@ wss.on('connection', ws => {
           break;
         case 'interrupt':
           manager.interrupt(msg.id);
+          break;
+        case 'mode':
+          manager.setMode(msg.id, msg.mode);
           break;
         case 'perm':
           manager.permission(msg.id, msg.requestId, !!msg.allow, msg.updatedInput);
