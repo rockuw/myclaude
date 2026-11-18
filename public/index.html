@@ -46,6 +46,15 @@
         <button class="btn btn-sm" id="btn-exit">退出会话</button>
       </div>
     </div>
+    <div id="task-panel" style="display:none">
+      <button id="task-panel-head">
+        <span class="tp-icon">☑</span>
+        <span class="tp-title">任务进展</span>
+        <span class="tp-count" id="tp-count"></span>
+        <span class="tp-chevron" id="tp-chevron">▾</span>
+      </button>
+      <div id="task-list"></div>
+    </div>
     <div id="messages-wrap">
       <div id="messages"><div class="msg-container" id="msg-container"></div></div>
       <button id="jump-bottom">↓ 新消息</button>

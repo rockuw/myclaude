@@ -129,7 +129,7 @@ function handleWS(m) {
       }
       break;
     case 'created':
-      current = { id: m.session.id, info: m.session, readOnly: false };
+      current = { id: m.session.id, info: m.session, readOnly: false, spawnMode: m.session.mode };
       enterChatView();
       resetChat();
       loadHistoryThenAttach(m.session.id);
@@ -137,6 +137,7 @@ function handleWS(m) {
     case 'attached':
       if (!current || current.id !== m.session.id) break;
       current.info = m.session;
+      if (!current.spawnMode) current.spawnMode = m.session.mode;
       updateChatHeader();
       hideLoading();
       for (const ev of m.events) renderEvent(ev);
@@ -328,7 +329,9 @@ function resetChat() {
     uuids: new Set(), seenSeq: new Set(), msgs: new Map(), tools: new Map(), perms: new Map(),
     blockNodes: new Map(), dirty: new Set(), raf: 0,
     nearBottom: true, typing: null, titleSet: false, pendingUsers: [],
+    tasks: new Map(), taskSeq: 0, tasksOpen: true, rowByUuid: new Map(),
   };
+  renderTaskPanel();
   $('#jump-bottom').classList.remove('show');
   updateComposerState();
 }
@@ -427,8 +430,9 @@ function afterRender(force) {
   if (!S) return;
   scrollBottom(force);
 }
-function msgRow(kind, ts) {
+function msgRow(kind, ts, uuid) {
   const row = el('div', 'msg msg-' + kind);
+  if (uuid) S.rowByUuid.set(uuid, row);
   row.appendChild(el('div', 'msg-avatar', kind === 'user' ? 'U' : 'C'));
   const body = el('div', 'msg-body');
   const head = el('div', 'msg-head');
@@ -517,23 +521,31 @@ function renderUser(ev) {
   // adopt it (record uuid for replay dedupe) instead of drawing a second row
   const pi = S.pendingUsers.findIndex(p => p.text === content);
   if (pi >= 0) {
-    S.pendingUsers.splice(pi, 1);
-    if (ev.uuid) S.uuids.add(ev.uuid);
+    const p = S.pendingUsers.splice(pi, 1)[0];
+    if (ev.uuid) { S.uuids.add(ev.uuid); S.rowByUuid.set(ev.uuid, p.node); }
     return;
   }
   if (ev.uuid && S.uuids.has(ev.uuid)) return;
   if (ev.uuid) S.uuids.add(ev.uuid);
   removeTyping();
-  const { content: node } = msgRow('user', ev.ts);
+  const { row, content: node } = msgRow('user', ev.ts, ev.uuid);
   node.textContent = content;
   setChatTitleFromText(content);
 }
+// insert a turn-anchored row (stats / permission) right after its message,
+// so history+replay overlap never stacks them at the container end
+function insertAnchored(row, afterUuid) {
+  const container = $('#msg-container');
+  const anchor = afterUuid && S.rowByUuid.get(afterUuid);
+  if (anchor && anchor.parentNode === container) container.insertBefore(row, anchor.nextSibling);
+  else container.appendChild(row);
+}
 
 // ----- assistant message: merge streamed + final blocks -----
-function getAssistantMsg(messageId, ts) {
+function getAssistantMsg(messageId, ts, uuid) {
   let m = S.msgs.get(messageId);
   if (!m) {
-    const { row, content } = msgRow('assistant', ts);
+    const { row, content } = msgRow('assistant', ts, uuid);
     m = { row, content, blocks: [], nodes: [], nextIdx: 0, ts };
     S.msgs.set(messageId, m);
   }
@@ -543,12 +555,14 @@ function renderAssistant(ev) {
   if (ev.uuid && S.uuids.has(ev.uuid)) return;
   if (ev.uuid) S.uuids.add(ev.uuid);
   removeTyping();
-  const m = getAssistantMsg(ev.messageId, ev.ts);
+  const m = getAssistantMsg(ev.messageId, ev.ts, ev.uuid);
+  if (ev.uuid && !S.rowByUuid.has(ev.uuid)) S.rowByUuid.set(ev.uuid, m.row);
   for (const b of ev.content || []) {
     if (b.type === 'tool_use') {
       const existing = m.blocks.findIndex(x => x && x.type === 'tool_use' && x.id === b.id);
       if (existing >= 0) { m.blocks[existing] = { ...b, final: true }; }
       else { m.blocks[m.nextIdx] = { ...b, final: true }; m.nextIdx++; }
+      trackTaskUse(b);
     } else if (b.type === 'text' || b.type === 'thinking') {
       let idx = m.blocks.findIndex(x => x && x.type === b.type && !x.final);
       if (idx < 0) idx = m.nextIdx;
@@ -675,8 +689,58 @@ function toolSummary(b) {
     }
   }
 }
+// ---------------- task progress panel (terminal todo-list equivalent) ----------------
+function trackTaskUse(b) {
+  if (!S || !b.input) return;
+  const inp = b.input;
+  if (b.name === 'TodoWrite' && Array.isArray(inp.todos)) {
+    S.tasks.clear();
+    inp.todos.forEach((t, i) => S.tasks.set('t' + i, { id: i + 1, subject: t.content || t.subject || '', status: t.status || 'pending', activeForm: t.activeForm }));
+  } else if (b.name === 'TaskCreate') {
+    S.tasks.set('new' + (++S.taskSeq), { id: null, subject: inp.subject || '', status: 'pending', activeForm: inp.activeForm, awaitingId: true });
+  } else if (b.name === 'TaskUpdate' && inp.taskId != null) {
+    const t = S.tasks.get(String(inp.taskId));
+    if (t) {
+      if (inp.status) t.status = inp.status;
+      if (inp.subject) t.subject = inp.subject;
+      if (inp.activeForm) t.activeForm = inp.activeForm;
+    }
+  } else return;
+  renderTaskPanel();
+}
+function assignTaskIdFromResult(text) {
+  const m = /Task #(\d+)/.exec(text || '');
+  if (!m) return;
+  for (const [k, t] of S.tasks) {
+    if (t.awaitingId) { t.awaitingId = false; t.id = Number(m[1]); S.tasks.delete(k); S.tasks.set(String(t.id), t); break; }
+  }
+  renderTaskPanel();
+}
+function renderTaskPanel() {
+  const panel = $('#task-panel');
+  if (!S || S.tasks.size === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const items = [...S.tasks.values()].sort((a, b) => (a.id || 999) - (b.id || 999));
+  const done = items.filter(t => t.status === 'completed').length;
+  $('#tp-count').textContent = done + '/' + items.length;
+  $('#tp-chevron').textContent = S.tasksOpen ? '▾' : '▸';
+  const list = $('#task-list');
+  list.style.display = S.tasksOpen ? '' : 'none';
+  list.innerHTML = '';
+  for (const t of items) {
+    const row = el('div', 'tp-row tp-' + t.status);
+    const icon = t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '<span class="spinner"></span>' : '○';
+    row.appendChild(el('span', 'tp-status', icon));
+    const label = t.status === 'in_progress' && t.activeForm ? t.activeForm : t.subject;
+    row.appendChild(el('span', 'tp-subject', esc(label)));
+    list.appendChild(row);
+  }
+}
+$('#task-panel-head').onclick = () => { if (S) { S.tasksOpen = !S.tasksOpen; renderTaskPanel(); } };
+
 function buildToolCard(b) {
   const card = el('div', 'toolcard is-running');
+  card._toolName = b.name;
   const head = el('div', 'toolcard-head');
   const icon = el('span', 'toolcard-icon ' + (TOOL_COLOR[b.name] || 'chip-yellow'), esc(TOOL_ICON[b.name] || '⚙'));
   const name = el('span', 'toolcard-name', esc(b.name || 'tool'));
@@ -727,6 +791,7 @@ function attachToolResult(b) {
   if (Array.isArray(text)) text = text.map(x => x.type === 'text' ? x.text : '[' + x.type + ']').join('\n');
   if (text == null) text = '';
   const result = { text: String(text), isError: !!b.is_error };
+  if (card._toolName === 'TaskCreate' && !result.isError) assignTaskIdFromResult(result.text);
   card._result = result;
   card.classList.remove('is-running');
   card.classList.add('is-done');
@@ -752,7 +817,7 @@ function renderResult(ev) {
   if (ev.usage && ev.usage.output_tokens != null) parts.push('↑' + (ev.usage.input_tokens || 0) + ' ↓' + ev.usage.output_tokens + ' tokens');
   row.textContent = parts.join('  ·  ');
   if (ev.isError && ev.text) row.textContent += '  ·  ' + String(ev.text).slice(0, 200);
-  $('#msg-container').appendChild(row);
+  insertAnchored(row, ev.afterUuid);
   if (current && current.info && !current.readOnly) { current.info.status = 'idle'; updateChatHeader(); }
 }
 function renderPermission(ev) {
@@ -785,7 +850,7 @@ function renderPermission(ev) {
   actions.append(allow, deny);
   card.appendChild(actions);
   card.appendChild(el('div', 'permcard-result'));
-  $('#msg-container').appendChild(card);
+  insertAnchored(card, ev.afterUuid);
   S.perms.set(ev.requestId, card);
   if (current && current.info) { current.info.status = 'waiting_permission'; updateChatHeader(); }
 }
@@ -832,9 +897,9 @@ function doSend() {
   input.value = '';
   autoGrow();
   // optimistic user row: visible immediately, echo adopts it later
-  const { content: node } = msgRow('user', new Date().toISOString());
+  const { row, content: node } = msgRow('user', new Date().toISOString());
   node.textContent = text;
-  S.pendingUsers.push({ text });
+  S.pendingUsers.push({ text, node: row });
   setChatTitleFromText(text);
   if (current.info) current.info.status = 'running';
   updateChatHeader();
@@ -869,7 +934,7 @@ $('#btn-exit').onclick = () => {
 
 // ---------------- new session modal ----------------
 const MODE_DESC = {
-  bypassPermissions: '所有工具调用直接执行，适合可信的本机环境。',
+  bypassPermissions: '所有工具调用直接执行，适合可信的本机环境。注意：该模式下 CLI 不提供 plan mode 工具，且会话中途切换也补不回；需要计划模式请选其它模式。',
   acceptEdits: '文件编辑自动通过；Bash 等其它工具会弹出授权卡片。',
   manual: '每个工具调用都会弹出授权卡片，由你允许或拒绝。',
   plan: '只读规划模式：Claude 先探索代码并产出计划，弹出计划卡片，批准后才开始执行。',
@@ -937,18 +1002,27 @@ function closeModeMenu() { modeMenu.style.display = 'none'; }
 function openModeMenu(anchor) {
   if (!current || !current.info) return;
   const cur = current.info.mode;
+  // plan tooling (EnterPlanMode/ExitPlanMode) is frozen at spawn: sessions
+  // created with bypassPermissions never get it, even after switching to plan
+  const noPlanTools = current.spawnMode === 'bypassPermissions';
   modeMenu.innerHTML = '';
   for (const m of ['manual', 'acceptEdits', 'plan']) {
     const b = el('button', 'mode-opt' + (m === cur ? ' selected' : ''), esc(MODE_LABEL[m]));
-    b.onclick = () => {
-      closeModeMenu();
-      if (sendWS({ t: 'mode', id: current.id, mode: m })) {
-        current.info.mode = m; // optimistic; server rolls back via mode event on CLI error
-        updateChatHeader();
-      }
-    };
+    if (m === 'plan' && noPlanTools) {
+      b.disabled = true;
+      b.title = '此会话创建时为跳过权限模式，CLI 未下发 plan 工具';
+    } else {
+      b.onclick = () => {
+        closeModeMenu();
+        if (sendWS({ t: 'mode', id: current.id, mode: m })) {
+          current.info.mode = m; // optimistic; server rolls back via mode event on CLI error
+          updateChatHeader();
+        }
+      };
+    }
     modeMenu.appendChild(b);
   }
+  if (noPlanTools) modeMenu.appendChild(el('div', 'mode-menu-note', '跳过权限模式创建的会话不含 plan 工具；如需计划模式请新建会话并选择其它权限模式。'));
   const r = anchor.getBoundingClientRect();
   modeMenu.style.display = 'flex';
   modeMenu.style.left = Math.max(8, Math.min(window.innerWidth - 158, r.left)) + 'px';

@@ -8,8 +8,9 @@ const fs = require('fs');
 const history = require('./history');
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claude');
-const META_FILE = path.join(__dirname, 'data', 'sessions.json');
-const RESTART_FILE = path.join(__dirname, 'data', 'restart.json');
+const DATA_DIR = process.env.MYCLAUDE_DATA_DIR || path.join(__dirname, 'data');
+const META_FILE = path.join(DATA_DIR, 'sessions.json');
+const RESTART_FILE = path.join(DATA_DIR, 'restart.json');
 
 function listSettings() {
   const out = [];
@@ -255,11 +256,15 @@ class Manager {
       case 'assistant':
         if (j.message) {
           s.status = 'running';
+          s.lastMsgUuid = j.uuid;
           this.emit(s, { k: 'assistant', uuid: j.uuid, messageId: j.message.id, content: j.message.content || [], model: j.message.model, ts: new Date().toISOString() });
         }
         break;
       case 'user':
-        if (j.message) this.emit(s, { k: 'user', uuid: j.uuid, content: j.message.content, ts: new Date().toISOString() });
+        if (j.message) {
+          s.lastMsgUuid = j.uuid;
+          this.emit(s, { k: 'user', uuid: j.uuid, content: j.message.content, ts: new Date().toISOString() });
+        }
         break;
       case 'result':
         s.status = 'idle';
@@ -267,6 +272,8 @@ class Manager {
         this.emit(s, {
           k: 'result', subtype: j.subtype, isError: j.is_error, durationMs: j.duration_ms,
           costUsd: j.total_cost_usd, turns: j.num_turns, usage: j.usage, text: j.result,
+          // anchor so replays insert the stats row after its turn, not at the end
+          afterUuid: s.lastMsgUuid,
         });
         this.notifySessions();
         break;
@@ -297,7 +304,7 @@ class Manager {
       const p = { requestId: j.request_id, toolName: req.tool_name, input: req.input, suggestions: req.permission_suggestions };
       s.pending.set(j.request_id, p);
       s.status = 'waiting_permission';
-      this.emit(s, { k: 'permission', ...p });
+      this.emit(s, { k: 'permission', ...p, afterUuid: s.lastMsgUuid });
       this.notifySessions();
     } else {
       // Unknown control request: answer success-empty so the CLI never stalls.
