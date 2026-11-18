@@ -327,7 +327,7 @@ function resetChat() {
   S = {
     uuids: new Set(), seenSeq: new Set(), msgs: new Map(), tools: new Map(), perms: new Map(),
     blockNodes: new Map(), dirty: new Set(), raf: 0,
-    nearBottom: true, typing: null, titleSet: false,
+    nearBottom: true, typing: null, titleSet: false, pendingUsers: [],
   };
   $('#jump-bottom').classList.remove('show');
   updateComposerState();
@@ -502,8 +502,6 @@ function renderEvent(ev) {
 }
 
 function renderUser(ev) {
-  if (ev.uuid && S.uuids.has(ev.uuid)) return;
-  if (ev.uuid) S.uuids.add(ev.uuid);
   let content = ev.content;
   if (Array.isArray(content)) {
     const texts = [];
@@ -515,6 +513,16 @@ function renderUser(ev) {
   }
   if (typeof content !== 'string' || !content.trim()) return;
   if (/^<(command-|local-command)/.test(content.trim()) || /^Caveat:/.test(content.trim())) return;
+  // echo of a message we already rendered optimistically at send time:
+  // adopt it (record uuid for replay dedupe) instead of drawing a second row
+  const pi = S.pendingUsers.findIndex(p => p.text === content);
+  if (pi >= 0) {
+    S.pendingUsers.splice(pi, 1);
+    if (ev.uuid) S.uuids.add(ev.uuid);
+    return;
+  }
+  if (ev.uuid && S.uuids.has(ev.uuid)) return;
+  if (ev.uuid) S.uuids.add(ev.uuid);
   removeTyping();
   const { content: node } = msgRow('user', ev.ts);
   node.textContent = content;
@@ -823,6 +831,11 @@ function doSend() {
   if (!sendWS({ t: 'send', id: current.id, text })) return;
   input.value = '';
   autoGrow();
+  // optimistic user row: visible immediately, echo adopts it later
+  const { content: node } = msgRow('user', new Date().toISOString());
+  node.textContent = text;
+  S.pendingUsers.push({ text });
+  setChatTitleFromText(text);
   if (current.info) current.info.status = 'running';
   updateChatHeader();
   showTyping();

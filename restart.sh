@@ -14,6 +14,7 @@ fi
 setsid nohup bash -c '
   cd "'"$PWD"'" || exit 1
   PORT='"$PORT"'
+  sleep 3  # grace: let the calling turn finish and persist before the server dies
   pid=$(ss -tlnp 2>/dev/null | grep ":$PORT " | grep -oP "pid=\K[0-9]+" | head -1)
   if [ -n "$pid" ]; then
     kill "$pid" 2>/dev/null
