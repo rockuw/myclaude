@@ -18,6 +18,8 @@ app.use(express.json());
 
 app.get('/api/settings', (req, res) => res.json(listSettings()));
 
+app.get('/api/info', (req, res) => res.json({ hostname: os.hostname() }));
+
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 app.get('/api/sessions', (req, res) => {

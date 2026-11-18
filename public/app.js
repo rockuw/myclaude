@@ -1083,4 +1083,5 @@ document.addEventListener('click', e => {
 // ---------------- boot ----------------
 connect();
 refreshSessions();
+fetch('/api/info').then(r => r.json()).then(d => { $('#host-badge').textContent = d.hostname || ''; }).catch(() => {});
 loadSettings().then(() => { renderHome(); if (current) updateChatHeader(); }).catch(() => {});
