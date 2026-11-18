@@ -138,7 +138,7 @@ function handleWS(m) {
       }
       break;
     case 'created': {
-      const cached = viewCache.get(m.session.id);
+      const cached = usableCache(m.session.id);
       if (cached) {
         restoreView(cached);
         current.readOnly = false;
@@ -288,11 +288,20 @@ function stampMatches(id, stamp) {
   const now = sessionStamp(id);
   return !!(stamp && now && now.mtime === stamp.mtime && now.size === stamp.size);
 }
+const VIEW_CONTENT_SEL = '.msg, .exit-banner, .system-row';
 function captureView() {
   if (!current || !current.id || !S) return null;
   const container = $('#msg-container');
+  // never cache an empty or still-loading view: it would poison reopen
+  if (!container.querySelector(VIEW_CONTENT_SEL)) return null;
   container.remove();
   return { id: current.id, container, S, current: { ...current } };
+}
+function usableCache(id) {
+  const v = viewCache.get(id);
+  if (!v) return null;
+  if (!v.container.querySelector(VIEW_CONTENT_SEL)) { viewCache.delete(id); return null; }
+  return v;
 }
 function putViewCache(v) {
   if (!v) return;
@@ -307,6 +316,7 @@ function restoreView(v) {
   wrap.innerHTML = '';
   wrap.appendChild(v.container);
   document.body.classList.add('chatting');
+  hideLoading();
   removeTyping();
   updateChatHeader();
   renderTaskPanel();
@@ -321,7 +331,7 @@ function goHome() {
   refreshSessions().then(() => putViewCache(stash));
 }
 function openActive(id) {
-  const cached = viewCache.get(id);
+  const cached = usableCache(id);
   if (cached) {
     restoreView(cached);
     current.readOnly = false;
@@ -344,7 +354,7 @@ function resumeSession(id, settings, force) {
   sendWS({ t: 'resume', id, settings, force });
 }
 function openReadOnly(id) {
-  const cached = viewCache.get(id);
+  const cached = usableCache(id);
   if (cached) {
     restoreView(cached);
     current.readOnly = true;
@@ -359,7 +369,9 @@ function openReadOnly(id) {
 }
 async function switchToReadOnly(id, stamp) {
   current.readOnly = true;
-  if (stampMatches(id, stamp)) { updateChatHeader(); afterRender(true); return; }
+  if (stampMatches(id, stamp) && $('#msg-container').querySelector(VIEW_CONTENT_SEL)) {
+    updateChatHeader(); afterRender(true); return;
+  }
   if (!viewCache.has(id)) { resetChat(); showLoading('正在加载历史会话…', '解析会话记录文件'); }
   await nextFrame();
   try {
