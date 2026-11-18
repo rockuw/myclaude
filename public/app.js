@@ -61,6 +61,24 @@ function copyText(text, btn) {
 
 // ---------------- markdown ----------------
 marked.setOptions({ gfm: true, breaks: true });
+// Lazy markdown: history text blocks render only near the viewport, so opening
+// a long session paints the visible tail instantly instead of highlighting
+// hundreds of code blocks up front. Live streaming blocks render synchronously.
+const lazyIO = ('IntersectionObserver' in window) ? new IntersectionObserver(entries => {
+  for (const en of entries) {
+    if (en.isIntersecting) { renderLazyMd(en.target); lazyIO.unobserve(en.target); }
+  }
+}, { root: null, rootMargin: '400px 0px' }) : null;
+function renderLazyMd(node) {
+  const text = node._mdText;
+  if (text == null) return;
+  node._mdText = null;
+  const md = renderMarkdown(text);
+  node.innerHTML = md.innerHTML;
+  bindCodeCopy(node);
+  node.removeAttribute('data-lazy');
+  if (S && S.nearBottom) scrollBottom();
+}
 function renderMarkdown(text) {
   const clean = DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['target'] });
   const div = el('div', 'md', clean);
@@ -410,6 +428,7 @@ async function loadHistoryThenAttach(id, stamp) {
   afterRender(true);
 }
 function resetChat() {
+  if (lazyIO) $('#msg-container').querySelectorAll('[data-lazy]').forEach(n => lazyIO.unobserve(n));
   $('#msg-container').innerHTML = '';
   S = {
     uuids: new Set(), seenSeq: new Set(), msgs: new Map(), tools: new Map(), perms: new Map(),
@@ -733,9 +752,17 @@ function updateBlockNode(node, b) {
   if (b.type === 'text') {
     if (node._text === b.text) return;
     node._text = b.text;
-    const md = renderMarkdown(b.text);
-    node.innerHTML = md.innerHTML;
-    bindCodeCopy(node);
+    if (b.final && lazyIO && !node._rendered) {
+      node._mdText = b.text;
+      node.setAttribute('data-lazy', '1');
+      node.innerHTML = '';
+      lazyIO.observe(node);
+    } else {
+      const md = renderMarkdown(b.text);
+      node.innerHTML = md.innerHTML;
+      bindCodeCopy(node);
+      node._rendered = true;
+    }
   } else if (b.type === 'thinking') {
     const body = node.querySelector('.thinking-body');
     if (body && body._t !== b.thinking) { body._t = b.thinking; body.textContent = b.thinking; }

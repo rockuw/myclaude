@@ -228,6 +228,7 @@ button.chip-mode:disabled { cursor: default; opacity: .8; }
 }
 
 /* markdown */
+.md[data-lazy] { min-height: 1.4em; }
 .md > *:first-child { margin-top: 0; }
 .md > *:last-child { margin-bottom: 0; }
 .md p { margin: 8px 0; }
