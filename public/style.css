@@ -177,12 +177,18 @@ button.chip-mode:disabled { cursor: default; opacity: .8; }
 
 /* ---------- task progress panel ---------- */
 #task-panel { border-bottom: var(--border); background: var(--cream-dark); }
-#task-panel-head {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  background: transparent; border: none; padding: 6px 14px;
+#task-panel-head { display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 14px; }
+.tp-toggle {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+  background: transparent; border: none; padding: 2px 0;
   font-weight: 700; font-size: 12.5px; color: var(--ink);
 }
-#task-panel-head:hover { background: rgba(20,17,17,.05); }
+.tp-toggle:hover { opacity: .75; }
+#task-close {
+  flex: none; width: 22px; height: 22px; border: 1.5px solid var(--ink);
+  border-radius: 5px; background: var(--paper); font-size: 13px; font-weight: 700; line-height: 1;
+}
+#task-close:hover { background: var(--red); }
 .tp-icon { width: 20px; height: 20px; flex: none; border: 1.5px solid var(--ink); border-radius: 5px; background: var(--lime); display: flex; align-items: center; justify-content: center; font-size: 11px; }
 .tp-title { font-family: var(--font-mono); letter-spacing: .5px; }
 .tp-count { font-family: var(--font-mono); font-size: 11px; background: var(--paper); border: 1.5px solid var(--ink); border-radius: 5px; padding: 0 7px; }

@@ -47,12 +47,15 @@
       </div>
     </div>
     <div id="task-panel" style="display:none">
-      <button id="task-panel-head">
-        <span class="tp-icon">☑</span>
-        <span class="tp-title">任务进展</span>
-        <span class="tp-count" id="tp-count"></span>
-        <span class="tp-chevron" id="tp-chevron">▾</span>
-      </button>
+      <div id="task-panel-head">
+        <button class="tp-toggle" id="tp-toggle">
+          <span class="tp-icon">☑</span>
+          <span class="tp-title">任务进展</span>
+          <span class="tp-count" id="tp-count"></span>
+          <span class="tp-chevron" id="tp-chevron">▾</span>
+        </button>
+        <button id="task-close" title="关闭任务面板（新任务创建时自动恢复）">×</button>
+      </div>
       <div id="task-list"></div>
     </div>
     <div id="messages-wrap">

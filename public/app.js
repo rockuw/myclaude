@@ -39,6 +39,12 @@ function shortPath(p) {
   if (!p) return '';
   return p.replace(/^\/home\/[^/]+/, '~');
 }
+// model declared by the session's settings file; used until the CLI init
+// reports the actual model (init is deferred until the first message)
+function settingsModel(file) {
+  const s = (settingsCache || []).find(x => x.file === file);
+  return s ? s.model : '';
+}
 function copyText(text, btn) {
   const done = () => { const old = btn.textContent; btn.textContent = '已复制 ✓'; setTimeout(() => btn.textContent = old, 1200); };
   if (navigator.clipboard && window.isSecureContext) {
@@ -79,6 +85,9 @@ function renderMarkdown(text) {
 // ---------------- state ----------------
 let ws = null, wsRetry = 0;
 let settingsCache = null, dirsCache = null;
+// rendered-view cache: leaving a session keeps its DOM + render state so
+// reopening is instant; history growth is synced incrementally via stamp
+const viewCache = new Map();
 let sessionsData = { active: [], history: [] };
 let current = null;   // {id, info, readOnly, meta}
 let S = null;         // per-chat render state
@@ -128,12 +137,23 @@ function handleWS(m) {
         if (info) { current.info = info; updateChatHeader(); }
       }
       break;
-    case 'created':
-      current = { id: m.session.id, info: m.session, readOnly: false, spawnMode: m.session.mode };
-      enterChatView();
-      resetChat();
-      loadHistoryThenAttach(m.session.id);
+    case 'created': {
+      const cached = viewCache.get(m.session.id);
+      if (cached) {
+        restoreView(cached);
+        current.readOnly = false;
+        current.info = m.session;
+        current.spawnMode = m.session.mode;
+        updateChatHeader();
+        loadHistoryThenAttach(m.session.id, cached.stamp);
+      } else {
+        current = { id: m.session.id, info: m.session, readOnly: false, spawnMode: m.session.mode };
+        enterChatView();
+        resetChat();
+        loadHistoryThenAttach(m.session.id);
+      }
       break;
+    }
     case 'attached':
       if (!current || current.id !== m.session.id) break;
       current.info = m.session;
@@ -221,8 +241,8 @@ function activeCard(s) {
   top.appendChild(el('div', 'sc-title', esc(s.title || shortPath(s.cwd) + ' · 新会话')));
   card.appendChild(top);
   const meta = el('div', 'sc-meta');
-  meta.appendChild(el('span', 'chip chip-yellow', esc(s.settings || '')));
-  if (s.model) meta.appendChild(el('span', 'chip chip-cyan', esc(s.model)));
+  const model = s.model || settingsModel(s.settings);
+  if (model) meta.appendChild(el('span', 'chip chip-cyan', esc(model)));
   meta.appendChild(el('span', 'chip chip-plain', esc(shortPath(s.cwd))));
   meta.appendChild(el('span', 'chip', esc(STATUS_LABEL[s.status] || s.status)));
   card.appendChild(meta);
@@ -260,13 +280,56 @@ function enterChatView() {
   document.body.classList.add('chatting');
   updateChatHeader();
 }
+function sessionStamp(id) {
+  const h = (sessionsData.history || []).find(x => x.id === id);
+  return h ? { mtime: h.mtime, size: h.size } : null;
+}
+function stampMatches(id, stamp) {
+  const now = sessionStamp(id);
+  return !!(stamp && now && now.mtime === stamp.mtime && now.size === stamp.size);
+}
+function captureView() {
+  if (!current || !current.id || !S) return null;
+  const container = $('#msg-container');
+  container.remove();
+  return { id: current.id, container, S, current: { ...current } };
+}
+function putViewCache(v) {
+  if (!v) return;
+  v.stamp = sessionStamp(v.id);
+  viewCache.set(v.id, v);
+  if (viewCache.size > 4) viewCache.delete(viewCache.keys().next().value);
+}
+function restoreView(v) {
+  current = v.current;
+  S = v.S;
+  const wrap = $('#messages');
+  wrap.innerHTML = '';
+  wrap.appendChild(v.container);
+  document.body.classList.add('chatting');
+  removeTyping();
+  updateChatHeader();
+  renderTaskPanel();
+  S.nearBottom = true;
+  scrollBottom(true);
+}
 function goHome() {
+  const stash = captureView();
   if (current && !current.readOnly) sendWS({ t: 'detach', id: current.id });
   current = null; S = null;
   document.body.classList.remove('chatting');
-  refreshSessions();
+  refreshSessions().then(() => putViewCache(stash));
 }
 function openActive(id) {
+  const cached = viewCache.get(id);
+  if (cached) {
+    restoreView(cached);
+    current.readOnly = false;
+    current.info = sessionsData.active.find(a => a.id === id) || current.info;
+    updateChatHeader();
+    loadHistoryThenAttach(id, cached.stamp);
+    return;
+  }
   current = { id, info: sessionsData.active.find(a => a.id === id), readOnly: false };
   enterChatView();
   resetChat();
@@ -281,15 +344,23 @@ function resumeSession(id, settings, force) {
   sendWS({ t: 'resume', id, settings, force });
 }
 function openReadOnly(id) {
+  const cached = viewCache.get(id);
+  if (cached) {
+    restoreView(cached);
+    current.readOnly = true;
+    updateChatHeader();
+    switchToReadOnly(id, cached.stamp);
+    return;
+  }
   current = { id, info: null, readOnly: true };
   enterChatView();
   resetChat();
   switchToReadOnly(id);
 }
-async function switchToReadOnly(id) {
+async function switchToReadOnly(id, stamp) {
   current.readOnly = true;
-  resetChat();
-  showLoading('正在加载历史会话…', '解析会话记录文件');
+  if (stampMatches(id, stamp)) { updateChatHeader(); afterRender(true); return; }
+  if (!viewCache.has(id)) { resetChat(); showLoading('正在加载历史会话…', '解析会话记录文件'); }
   await nextFrame();
   try {
     const r = await fetch('/api/sessions/' + id + '/messages');
@@ -306,18 +377,21 @@ async function switchToReadOnly(id) {
     afterRender(true);
   } catch (e) { hideLoading(); toast(e.message); goHome(); }
 }
-async function loadHistoryThenAttach(id) {
+async function loadHistoryThenAttach(id, stamp) {
   // Render persisted history first (uuid-deduped), then replay live buffer.
-  await nextFrame();
-  try {
-    const r = await fetch('/api/sessions/' + id + '/messages');
-    if (r.ok) {
-      const data = await r.json();
-      current.meta = data;
-      if (data.title && current.info && !current.info.title) current.info.title = data.title;
-      for (const ev of data.events) renderEvent(ev);
-    }
-  } catch {}
+  // With a matching stamp the cached view is already up to date: skip fetch.
+  if (!stampMatches(id, stamp)) {
+    await nextFrame();
+    try {
+      const r = await fetch('/api/sessions/' + id + '/messages');
+      if (r.ok) {
+        const data = await r.json();
+        current.meta = data;
+        if (data.title && current.info && !current.info.title) current.info.title = data.title;
+        for (const ev of data.events) renderEvent(ev);
+      }
+    } catch {}
+  }
   hideLoading();
   sendWS({ t: 'attach', id });
   updateChatHeader();
@@ -329,7 +403,7 @@ function resetChat() {
     uuids: new Set(), seenSeq: new Set(), msgs: new Map(), tools: new Map(), perms: new Map(),
     blockNodes: new Map(), dirty: new Set(), raf: 0,
     nearBottom: true, typing: null, titleSet: false, pendingUsers: [],
-    tasks: new Map(), taskSeq: 0, tasksOpen: true, rowByUuid: new Map(),
+    tasks: new Map(), taskSeq: 0, tasksOpen: true, tasksDismissed: false, rowByUuid: new Map(),
   };
   renderTaskPanel();
   $('#jump-bottom').classList.remove('show');
@@ -392,9 +466,8 @@ function updateChatHeader() {
   st.appendChild(statusDot(status));
   st.appendChild(document.createTextNode(current.readOnly ? '只读' : (STATUS_LABEL[status] || status)));
   badges.appendChild(st);
-  const model = info.model || meta.model;
+  const model = info.model || meta.model || settingsModel(info.settings);
   if (model) badges.appendChild(el('span', 'chip chip-cyan', esc(model)));
-  if (info.settings) badges.appendChild(el('span', 'chip chip-yellow', esc(info.settings)));
   if (info.mode) {
     const modeChip = el('button', 'chip chip-lavender chip-mode', esc(MODE_LABEL[info.mode] || info.mode) + ' ▾');
     modeChip.title = '切换权限模式（相当于 CLI 的 Shift+Tab）';
@@ -609,11 +682,12 @@ function renderStream(event) {
 }
 function scheduleFlush() {
   if (S.raf) return;
-  S.raf = requestAnimationFrame(() => {
-    S.raf = 0;
-    if (!S) return;
-    for (const m of S.dirty) syncAssistantNodes(m);
-    S.dirty.clear();
+  const s = S;
+  s.raf = requestAnimationFrame(() => {
+    s.raf = 0;
+    if (S !== s) return; // view switched before the frame fired
+    for (const m of s.dirty) syncAssistantNodes(m);
+    s.dirty.clear();
     afterRender();
   });
 }
@@ -696,8 +770,10 @@ function trackTaskUse(b) {
   if (b.name === 'TodoWrite' && Array.isArray(inp.todos)) {
     S.tasks.clear();
     inp.todos.forEach((t, i) => S.tasks.set('t' + i, { id: i + 1, subject: t.content || t.subject || '', status: t.status || 'pending', activeForm: t.activeForm }));
+    S.tasksDismissed = false; S.tasksOpen = true; // new list always surfaces
   } else if (b.name === 'TaskCreate') {
     S.tasks.set('new' + (++S.taskSeq), { id: null, subject: inp.subject || '', status: 'pending', activeForm: inp.activeForm, awaitingId: true });
+    S.tasksDismissed = false; S.tasksOpen = true;
   } else if (b.name === 'TaskUpdate' && inp.taskId != null) {
     const t = S.tasks.get(String(inp.taskId));
     if (t) {
@@ -718,7 +794,7 @@ function assignTaskIdFromResult(text) {
 }
 function renderTaskPanel() {
   const panel = $('#task-panel');
-  if (!S || S.tasks.size === 0) { panel.style.display = 'none'; return; }
+  if (!S || S.tasks.size === 0 || S.tasksDismissed) { panel.style.display = 'none'; return; }
   panel.style.display = '';
   const items = [...S.tasks.values()].sort((a, b) => (a.id || 999) - (b.id || 999));
   const done = items.filter(t => t.status === 'completed').length;
@@ -736,7 +812,8 @@ function renderTaskPanel() {
     list.appendChild(row);
   }
 }
-$('#task-panel-head').onclick = () => { if (S) { S.tasksOpen = !S.tasksOpen; renderTaskPanel(); } };
+$('#tp-toggle').onclick = () => { if (S) { S.tasksOpen = !S.tasksOpen; renderTaskPanel(); } };
+$('#task-close').onclick = () => { if (S) { S.tasksDismissed = true; renderTaskPanel(); } };
 
 function buildToolCard(b) {
   const card = el('div', 'toolcard is-running');
@@ -1035,3 +1112,4 @@ document.addEventListener('click', e => {
 // ---------------- boot ----------------
 connect();
 refreshSessions();
+loadSettings().then(() => { renderHome(); if (current) updateChatHeader(); }).catch(() => {});
