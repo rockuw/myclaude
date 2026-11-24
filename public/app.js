@@ -78,6 +78,7 @@ function renderLazyMd(node) {
   bindCodeCopy(node);
   node.removeAttribute('data-lazy');
   if (S && S.nearBottom) scrollBottom();
+  scheduleUserNav();
 }
 function renderMarkdown(text) {
   const clean = DOMPurify.sanitize(marked.parse(text || ''), { ADD_ATTR: ['target'] });
@@ -370,6 +371,8 @@ function resetChat() {
   };
   renderTaskPanel();
   $('#jump-bottom').classList.remove('show');
+  $('#user-nav').classList.remove('show');
+  $('#messages-wrap').classList.remove('has-nav');
   updateComposerState();
 }
 function showLoading(text, sub) {
@@ -465,6 +468,7 @@ function scrollBottom(force) {
 function afterRender(force) {
   if (!S) return;
   scrollBottom(force);
+  scheduleUserNav();
 }
 function msgRow(kind, ts, uuid) {
   const row = el('div', 'msg msg-' + kind);
@@ -957,12 +961,66 @@ function doSend() {
   input.focus();
 }
 
+// ---------------- user-input navigation ----------------
+function userRowTops() {
+  const box = $('#messages');
+  const base = box.getBoundingClientRect().top;
+  const st = box.scrollTop;
+  return Array.from($('#msg-container').querySelectorAll('.msg-user'))
+    .map(r => ({ row: r, top: r.getBoundingClientRect().top - base + st }));
+}
+function updateUserNav() {
+  const nav = $('#user-nav');
+  if (!S) { nav.classList.remove('show'); return; }
+  const tops = userRowTops();
+  if (!tops.length) { nav.classList.remove('show'); $('#messages-wrap').classList.remove('has-nav'); return; }
+  nav.classList.add('show');
+  $('#messages-wrap').classList.add('has-nav');
+  const st = $('#messages').scrollTop;
+  $('#nav-prev').disabled = !tops.some(t => t.top < st - 20);
+  $('#nav-next').disabled = !tops.some(t => t.top > st + 20);
+}
+let navRaf = 0;
+function scheduleUserNav() {
+  if (navRaf) return;
+  navRaf = requestAnimationFrame(() => { navRaf = 0; updateUserNav(); });
+}
+function jumpToUser(dir) {
+  const tops = userRowTops();
+  const st = $('#messages').scrollTop;
+  const target = dir < 0
+    ? [...tops].reverse().find(t => t.top < st - 20)
+    : tops.find(t => t.top > st + 20);
+  if (!target) return;
+  $('#messages').scrollTo({ top: Math.max(0, target.top - 12), behavior: 'smooth' });
+  target.row.classList.remove('nav-flash');
+  void target.row.offsetWidth;
+  target.row.classList.add('nav-flash');
+  setTimeout(() => target.row.classList.remove('nav-flash'), 1200);
+  // lazy renders en route can shift heights: re-align once scrolling settles
+  S.navTarget = target.row;
+  setTimeout(realignNav, 700);
+}
+function realignNav() {
+  if (!S || !S.navTarget) return;
+  const t = userRowTops().find(x => x.row === S.navTarget);
+  S.navTarget = null;
+  if (!t) return;
+  const box = $('#messages');
+  const want = Math.max(0, t.top - 12);
+  if (Math.abs(box.scrollTop - want) > 4) box.scrollTo({ top: want });
+}
+$('#messages').addEventListener('scrollend', realignNav);
+$('#nav-prev').onclick = () => jumpToUser(-1);
+$('#nav-next').onclick = () => jumpToUser(1);
+
 // ---------------- scroll tracking ----------------
 $('#messages').addEventListener('scroll', () => {
   if (!S) return;
   const box = $('#messages');
   S.nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
   $('#jump-bottom').classList.toggle('show', !S.nearBottom);
+  scheduleUserNav();
 });
 $('#jump-bottom').onclick = () => { S.nearBottom = true; scrollBottom(true); $('#jump-bottom').classList.remove('show'); };
 if (window.visualViewport) {

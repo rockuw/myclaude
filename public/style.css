@@ -331,6 +331,22 @@ button.chip-mode:disabled { cursor: default; opacity: .8; }
   display: none;
 }
 #jump-bottom.show { display: block; }
+#user-nav { position: absolute; top: 10px; right: 14px; z-index: 6; display: none; flex-direction: column; gap: 6px; }
+#user-nav.show { display: flex; }
+#user-nav button {
+  width: 34px; height: 34px; border: var(--border); border-radius: 8px;
+  background: var(--paper); box-shadow: 2px 2px 0 var(--ink);
+  font-size: 15px; font-weight: 700; color: var(--ink);
+  transition: transform .08s ease, box-shadow .08s ease;
+}
+#user-nav button:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--ink); background: var(--yellow); }
+#user-nav button:active:not(:disabled) { transform: translate(1px, 1px); box-shadow: 0 0 0 var(--ink); }
+#user-nav button:disabled { opacity: .35; cursor: default; }
+.msg.nav-flash { animation: navflash 1.1s ease; border-radius: 8px; }
+@keyframes navflash {
+  0%, 55% { outline: 3px solid var(--yellow); outline-offset: 3px; }
+  100% { outline: 3px solid transparent; outline-offset: 3px; }
+}
 
 /* ---------- loading state ---------- */
 .loading-card {
@@ -442,6 +458,9 @@ button.chip-mode:disabled { cursor: default; opacity: .8; }
   .codeblock code { font-size: 11.5px; }
   .codeblock pre { padding: 10px; }
   .result-row { margin-left: 34px; font-size: 10px; gap: 8px; }
+  #user-nav { top: 8px; right: 10px; gap: 8px; }
+  #user-nav button { width: 40px; height: 40px; font-size: 17px; }
+  #messages-wrap.has-nav #messages { padding-right: 56px; }
   .sk-avatar { width: 26px; height: 26px; }
   .loading-card { padding: 10px 14px; gap: 10px; }
   .loading-text { font-size: 13px; }
