@@ -83,7 +83,12 @@
   <div class="modal" id="modal-new">
     <h2>新建会话</h2>
     <div class="modal-sub">选择模型配置、工作目录与权限模式</div>
-    <label class="field-label">Settings 配置（~/.claude/settings.*）</label>
+    <label class="field-label">引擎</label>
+    <div class="engine-row">
+      <label class="engine-opt selected"><input type="radio" name="engine" value="claude" checked> Claude Code</label>
+      <label class="engine-opt"><input type="radio" name="engine" value="codex"> Codex</label>
+    </div>
+    <label class="field-label" id="settings-label">Settings 配置（~/.claude/settings.*）</label>
     <div class="settings-list" id="settings-list"></div>
     <label class="field-label" for="cwd-input">工作目录</label>
     <input class="text-input" id="cwd-input" list="dirs-list" placeholder="/home/rockuw" spellcheck="false">

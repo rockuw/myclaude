@@ -45,6 +45,17 @@ function settingsModel(file) {
   const s = (settingsCache || []).find(x => x.file === file);
   return s ? s.model : '';
 }
+function codexModel(file) {
+  const p = (codexCache || []).find(x => x.file === file);
+  return p ? p.model : '';
+}
+function engineModel(info) {
+  if (!info) return '';
+  return info.engine === 'codex' ? codexModel(info.settings) : settingsModel(info.settings);
+}
+function engineChip(engine) {
+  return engine === 'codex' ? el('span', 'chip chip-orange', 'codex') : null;
+}
 function copyText(text, btn) {
   const done = () => { const old = btn.textContent; btn.textContent = '已复制 ✓'; setTimeout(() => btn.textContent = old, 1200); };
   if (navigator.clipboard && window.isSecureContext) {
@@ -103,7 +114,7 @@ function renderMarkdown(text) {
 
 // ---------------- state ----------------
 let ws = null, wsRetry = 0;
-let settingsCache = null, dirsCache = null;
+let settingsCache = null, dirsCache = null, codexCache = null;
 let sessionsData = { active: [], history: [] };
 let current = null;   // {id, info, readOnly, meta}
 let S = null;         // per-chat render state
@@ -257,7 +268,9 @@ function activeCard(s) {
   top.appendChild(el('div', 'sc-title', esc(s.title || shortPath(s.cwd) + ' · 新会话')));
   card.appendChild(top);
   const meta = el('div', 'sc-meta');
-  const model = s.model || settingsModel(s.settings);
+  const ec = engineChip(s.engine);
+  if (ec) meta.appendChild(ec);
+  const model = s.model || engineModel(s);
   if (model) meta.appendChild(el('span', 'chip chip-cyan', esc(model)));
   meta.appendChild(el('span', 'chip chip-plain', esc(shortPath(s.cwd))));
   meta.appendChild(el('span', 'chip', esc(STATUS_LABEL[s.status] || s.status)));
@@ -276,6 +289,8 @@ function historyCard(h) {
   card.appendChild(el('div', 'sc-top', `<div class="sc-title">${esc(h.title || h.snippet)}</div>`));
   if (h.snippet) card.appendChild(el('div', 'sc-snippet', esc(h.snippet)));
   const meta = el('div', 'sc-meta');
+  const ec = engineChip(h.engine);
+  if (ec) meta.appendChild(ec);
   if (h.model) meta.appendChild(el('span', 'chip chip-cyan', esc(h.model)));
   meta.appendChild(el('span', 'chip chip-plain', esc(shortPath(h.cwd))));
   meta.appendChild(el('span', 'chip', esc(fmtRel(h.mtime))));
@@ -432,12 +447,14 @@ function updateChatHeader() {
   st.appendChild(statusDot(status));
   st.appendChild(document.createTextNode(current.readOnly ? '只读' : (STATUS_LABEL[status] || status)));
   badges.appendChild(st);
-  const model = info.model || meta.model || settingsModel(info.settings);
+  const ec = engineChip(info.engine);
+  if (ec) badges.appendChild(ec);
+  const model = info.model || meta.model || engineModel(info);
   if (model) badges.appendChild(el('span', 'chip chip-cyan', esc(model)));
   if (info.mode) {
-    const modeChip = el('button', 'chip chip-lavender chip-mode', esc(MODE_LABEL[info.mode] || info.mode) + ' ▾');
-    modeChip.title = '切换权限模式（相当于 CLI 的 Shift+Tab）';
-    if (!current.readOnly && status !== 'exited' && status !== 'error') modeChip.onclick = e => { e.stopPropagation(); openModeMenu(modeChip); };
+    const modeChip = el('button', 'chip chip-lavender chip-mode', esc(MODE_LABEL[info.mode] || info.mode) + (info.engine === 'codex' ? '' : ' ▾'));
+    modeChip.title = info.engine === 'codex' ? 'codex 权限模式在创建时确定' : '切换权限模式（相当于 CLI 的 Shift+Tab）';
+    if (!current.readOnly && status !== 'exited' && status !== 'error' && info.engine !== 'codex') modeChip.onclick = e => { e.stopPropagation(); openModeMenu(modeChip); };
     else modeChip.disabled = true;
     badges.appendChild(modeChip);
   }
@@ -859,6 +876,8 @@ function attachToolResult(b) {
 
 // ----- result / permission / typing -----
 function renderResult(ev) {
+  if (ev.uuid && S.uuids.has(ev.uuid)) return;
+  if (ev.uuid) S.uuids.add(ev.uuid);
   removeTyping();
   const row = el('div', 'result-row' + (ev.isError ? ' is-error' : ''));
   const parts = [];
@@ -951,7 +970,8 @@ function doSend() {
   // optimistic user row: visible immediately, echo adopts it later
   const { row, content: node } = msgRow('user', new Date().toISOString());
   node.textContent = text;
-  S.pendingUsers.push({ text, node: row });
+  // codex exec never echoes user messages; claude does (replay-user-messages)
+  if (!current.info || current.info.engine !== 'codex') S.pendingUsers.push({ text, node: row });
   setChatTitleFromText(text);
   if (current.info) current.info.status = 'running';
   updateChatHeader();
@@ -1045,13 +1065,30 @@ const MODE_DESC = {
   manual: '每个工具调用都会弹出授权卡片，由你允许或拒绝。',
   plan: '只读规划模式：Claude 先探索代码并产出计划，弹出计划卡片，批准后才开始执行。',
 };
-async function openNewModal() {
-  const [settings, dirs] = await Promise.all([loadSettings(), loadDirs()]);
+async function loadCodexProfiles() {
+  if (!codexCache) codexCache = await (await fetch('/api/codex-profiles')).json();
+  return codexCache;
+}
+function currentEngine() {
+  const r = document.querySelector('input[name="engine"]:checked');
+  return r ? r.value : 'claude';
+}
+function updateModeDesc() {
+  const mode = $('#mode-select').value;
+  let desc = MODE_DESC[mode] || '';
+  if (currentEngine() === 'codex') desc += ' codex exec 为非交互：权限由沙箱策略执行（无授权卡片），模式创建后不可切换。';
+  $('#mode-desc').textContent = desc;
+}
+function renderSettingsList(engine) {
   const list = $('#settings-list');
   list.innerHTML = '';
-  const saved = localStorage.getItem('myclaude.settings');
-  let selected = settings.find(s => s.file === saved) || settings.find(s => s.isDefault) || settings[0];
-  settings.forEach(s => {
+  const items = engine === 'codex' ? (codexCache || []) : (settingsCache || []);
+  $('#settings-label').textContent = engine === 'codex'
+    ? 'Codex profile（~/.codex/*.config.toml）'
+    : 'Settings 配置（~/.claude/settings.*）';
+  const saved = localStorage.getItem('myclaude.settings.' + engine);
+  let selected = items.find(s => s.file === saved) || items.find(s => s.isDefault) || items[0];
+  items.forEach(s => {
     const opt = el('label', 'settings-opt' + (s === selected ? ' selected' : ''));
     const radio = el('input');
     radio.type = 'radio'; radio.name = 'settings'; radio.value = s.file;
@@ -1062,17 +1099,32 @@ async function openNewModal() {
       opt.classList.add('selected');
     };
     opt.appendChild(radio);
-    opt.appendChild(el('span', 'so-name', esc(s.file)));
+    opt.appendChild(el('span', 'so-name', esc(engine === 'codex' ? s.name : s.file)));
     opt.appendChild(el('span', 'so-model', esc(s.model || s.host || '')));
     list.appendChild(opt);
   });
+}
+async function openNewModal() {
+  const [, , dirs] = await Promise.all([loadSettings(), loadCodexProfiles(), loadDirs()]);
+  const engine = localStorage.getItem('myclaude.engine') || 'claude';
+  document.querySelectorAll('input[name="engine"]').forEach(r => {
+    r.checked = r.value === engine;
+    r.closest('.engine-opt').classList.toggle('selected', r.checked);
+    r.onchange = () => {
+      document.querySelectorAll('.engine-opt').forEach(o => o.classList.remove('selected'));
+      r.closest('.engine-opt').classList.add('selected');
+      renderSettingsList(currentEngine());
+      updateModeDesc();
+    };
+  });
+  renderSettingsList(engine);
   const dl = $('#dirs-list');
   dl.innerHTML = dirs.map(d => `<option value="${esc(d)}">`).join('');
   $('#cwd-input').value = localStorage.getItem('myclaude.cwd') || dirs[0] || '';
   const modeSel = $('#mode-select');
-  modeSel.value = localStorage.getItem('myclaude.mode') || 'bypassPermissions';
-  $('#mode-desc').textContent = MODE_DESC[modeSel.value] || '';
-  modeSel.onchange = () => $('#mode-desc').textContent = MODE_DESC[modeSel.value] || '';
+  modeSel.value = localStorage.getItem('myclaude.mode') || (engine === 'codex' ? 'acceptEdits' : 'bypassPermissions');
+  updateModeDesc();
+  modeSel.onchange = updateModeDesc;
   $('#modal-overlay').classList.add('show');
 }
 function closeNewModal() { $('#modal-overlay').classList.remove('show'); }
@@ -1084,14 +1136,16 @@ $('#btn-create').onclick = () => {
   const settings = document.querySelector('input[name="settings"]:checked');
   const cwd = $('#cwd-input').value.trim();
   const mode = $('#mode-select').value;
-  if (!settings) { toast('请选择一个 settings 配置'); return; }
+  const engine = currentEngine();
+  if (!settings) { toast('请选择一个配置'); return; }
   if (!cwd) { toast('请填写工作目录'); return; }
-  localStorage.setItem('myclaude.settings', settings.value);
+  localStorage.setItem('myclaude.settings.' + engine, settings.value);
+  localStorage.setItem('myclaude.engine', engine);
   localStorage.setItem('myclaude.cwd', cwd);
   localStorage.setItem('myclaude.mode', mode);
   closeNewModal();
   resetChatPending();
-  sendWS({ t: 'create', settings: settings.value, cwd, mode });
+  sendWS({ t: 'create', settings: settings.value, cwd, mode, engine });
 };
 function resetChatPending() {
   current = { id: null, info: null, readOnly: false };
@@ -1142,4 +1196,4 @@ document.addEventListener('click', e => {
 connect();
 refreshSessions();
 fetch('/api/info').then(r => r.json()).then(d => { $('#host-badge').textContent = d.hostname || ''; }).catch(() => {});
-loadSettings().then(() => { renderHome(); if (current) updateChatHeader(); }).catch(() => {});
+Promise.all([loadSettings(), loadCodexProfiles()]).then(() => { renderHome(); if (current) updateChatHeader(); }).catch(() => {});

@@ -20,6 +20,8 @@ app.get('/api/settings', (req, res) => res.json(listSettings()));
 
 app.get('/api/info', (req, res) => res.json({ hostname: os.hostname() }));
 
+app.get('/api/codex-profiles', (req, res) => res.json(require('./codex').listProfiles()));
+
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 app.get('/api/sessions', (req, res) => {
@@ -58,7 +60,7 @@ wss.on('connection', ws => {
     try {
       switch (msg.t) {
         case 'create': {
-          const s = manager.create({ settings: msg.settings, cwd: msg.cwd || os.homedir(), mode: msg.mode || 'bypassPermissions' });
+          const s = manager.create({ settings: msg.settings, cwd: msg.cwd || os.homedir(), mode: msg.mode || 'bypassPermissions', engine: msg.engine });
           s.subscribers.add(ws);
           ws.send(JSON.stringify({ t: 'created', session: manager.info(s) }));
           break;

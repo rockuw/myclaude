@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const history = require('./history');
+const codex = require('./codex');
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claude');
 const DATA_DIR = process.env.MYCLAUDE_DATA_DIR || path.join(__dirname, 'data');
@@ -100,6 +101,7 @@ class Manager {
     return {
       id: s.id, cwd: s.cwd, settings: s.settingsFile, mode: s.permissionMode,
       status: s.status, model: s.model, title: s.title, createdAt: s.createdAt,
+      engine: s.engine || 'claude',
       resumed: s.resumed, pendingPermissions: [...s.pending.values()].map(p => ({ requestId: p.requestId, toolName: p.toolName })),
     };
   }
@@ -114,9 +116,29 @@ class Manager {
     this.broadcastAll({ t: 'sessions', active: this.activeInfos() });
   }
 
-  create({ settings, cwd, mode }) {
+  create({ settings, cwd, mode, engine }) {
     const id = crypto.randomUUID();
+    if (engine === 'codex') return this._createCodex({ id, settings, cwd, mode, resumed: false });
     return this._spawn({ id, settings, cwd, mode, resumed: false });
+  }
+
+  _createCodex({ id, settings, cwd, mode, resumed, title, threadId }) {
+    const profiles = codex.listProfiles();
+    const profile = profiles.find(p => p.file === settings) || profiles[0];
+    if (!profile) throw new Error('没有可用的 codex profile');
+    if (!fs.existsSync(cwd)) throw new Error('工作目录不存在: ' + cwd);
+    const s = {
+      id, engine: 'codex', proc: null, cwd, settingsFile: profile.file,
+      permissionMode: mode || 'acceptEdits', status: 'idle', model: profile.model || '',
+      title: title || '', resumed, createdAt: Date.now(), events: [],
+      subscribers: new Set(), pending: new Map(), stderrTail: '',
+      codexThreadId: threadId || (this.meta[id] && this.meta[id].codexThreadId) || null,
+    };
+    this.sessions.set(id, s);
+    this.meta[id] = { settings: profile.file, mode: s.permissionMode, cwd, pid: null, title: s.title, engine: 'codex', codexThreadId: s.codexThreadId, updatedAt: Date.now() };
+    this._saveMeta();
+    this.notifySessions();
+    return s;
   }
 
   resume({ id, settings, mode, cwd, force }) {
@@ -124,6 +146,16 @@ class Manager {
     if (existing && existing.status !== 'exited' && existing.status !== 'error') return existing;
     const hist = history.getMessages(id);
     if (!hist) throw new Error('找不到该历史会话: ' + id);
+    if (hist.engine === 'codex') {
+      const meta = this.meta[id] || {};
+      const inferred = codex.listProfiles().find(p => p.model && hist.model && p.model === hist.model);
+      return this._createCodex({
+        id, settings: settings || meta.settings || (inferred && inferred.file) || 'default',
+        cwd: cwd || meta.cwd || hist.cwd || os.homedir(),
+        mode: mode || meta.mode || 'acceptEdits', resumed: true,
+        title: hist.title || meta.title, threadId: id,
+      });
+    }
     // Safety: a transcript written seconds ago is likely live in another
     // terminal/process; resuming it would fork a running conversation.
     const oursExited = existing && (existing.status === 'exited' || existing.status === 'error');
@@ -227,6 +259,7 @@ class Manager {
   _handleLine(s, line) {
     let j;
     try { j = JSON.parse(line); } catch { return; }
+    if (s.engine === 'codex') { codex.translate(this, s, j); return; }
     switch (j.type) {
       case 'system':
         if (j.subtype === 'init') {
@@ -333,11 +366,37 @@ class Manager {
     const s = this.sessions.get(id);
     if (!s) throw new Error('会话不存在');
     if (s.status === 'exited' || s.status === 'error') throw new Error('会话已结束，请重新 resume');
-    s.status = 'running';
     if (!s.title) {
       s.title = text.replace(/\s+/g, ' ').trim().slice(0, 60);
       if (this.meta[s.id]) { this.meta[s.id].title = s.title; this._saveMeta(); }
     }
+    if (s.engine === 'codex') {
+      if (s.proc) throw new Error('codex 当前回合未完成，请稍候');
+      const proc = codex.spawnTurn(s, text);
+      let buf = '';
+      proc.stdout.on('data', d => {
+        buf += d.toString('utf8');
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i); buf = buf.slice(i + 1);
+          if (line.trim()) this._handleLine(s, line);
+        }
+      });
+      proc.stderr.on('data', d => { s.stderrTail = (s.stderrTail + d.toString('utf8')).slice(-4000); });
+      proc.on('exit', code => {
+        s.proc = null;
+        if (s.status === 'running' && !s.gotTurnResult) {
+          s.status = 'idle';
+          this.emit(s, { k: 'error', message: 'codex 回合异常结束（code ' + code + '）' + (s.stderrTail ? ': ' + s.stderrTail.slice(-300) : '') });
+        } else if (s.status === 'running') {
+          s.status = 'idle';
+        }
+        this.notifySessions();
+      });
+      this.notifySessions();
+      return;
+    }
+    s.status = 'running';
     this._write(s, { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
     this.notifySessions();
   }
@@ -345,6 +404,10 @@ class Manager {
   interrupt(id) {
     const s = this.sessions.get(id);
     if (!s) return;
+    if (s.engine === 'codex') {
+      if (s.proc) { try { s.proc.kill('SIGTERM'); } catch {} }
+      return;
+    }
     this._write(s, { type: 'control_request', request_id: 'int_' + crypto.randomUUID(), request: { subtype: 'interrupt' } });
   }
 
@@ -354,6 +417,7 @@ class Manager {
     const s = this.sessions.get(id);
     if (!s) throw new Error('会话不存在');
     if (s.status === 'exited' || s.status === 'error') throw new Error('会话已结束');
+    if (s.engine === 'codex') throw new Error('codex 会话的权限模式在创建时确定');
     if (!['manual', 'acceptEdits', 'plan'].includes(mode)) throw new Error('不支持的模式: ' + mode);
     const requestId = 'mode_' + crypto.randomUUID();
     s.modeReq = { id: requestId, prev: s.permissionMode };
@@ -388,8 +452,10 @@ class Manager {
     const s = this.sessions.get(id);
     if (!s) return;
     s.status = 'exited';
-    try { s.proc.kill('SIGTERM'); } catch {}
-    setTimeout(() => { try { if (s.proc.exitCode === null) s.proc.kill('SIGKILL'); } catch {} }, 5000);
+    if (s.proc) {
+      try { s.proc.kill('SIGTERM'); } catch {}
+      setTimeout(() => { try { if (s.proc && s.proc.exitCode === null) s.proc.kill('SIGKILL'); } catch {} }, 5000);
+    }
     this.notifySessions();
   }
 }
