@@ -1195,5 +1195,8 @@ document.addEventListener('click', e => {
 // ---------------- boot ----------------
 connect();
 refreshSessions();
-fetch('/api/info').then(r => r.json()).then(d => { $('#host-badge').textContent = d.hostname || ''; }).catch(() => {});
+fetch('/api/info').then(r => r.json()).then(d => {
+  $('#host-badge').textContent = d.hostname || '';
+  if (d.hostname) document.title = d.hostname; // tab name identifies the machine
+}).catch(() => {});
 Promise.all([loadSettings(), loadCodexProfiles()]).then(() => { renderHome(); if (current) updateChatHeader(); }).catch(() => {});
