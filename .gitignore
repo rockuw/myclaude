@@ -3,3 +3,4 @@ data/
 server.log
 .playwright-cli/
 *.log
+public/img/
