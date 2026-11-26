@@ -33,8 +33,12 @@ app.get('/api/sessions', (req, res) => {
 
 app.get('/api/sessions/:id/messages', (req, res) => {
   const data = history.getMessages(req.params.id);
-  if (!data) return res.status(404).json({ error: 'session not found' });
-  res.json(data);
+  if (data) return res.json(data);
+  // Freshly created sessions have no transcript file yet (the CLI writes it
+  // after the first turn): serve empty history, the live attach replay covers it.
+  const s = manager.sessions.get(req.params.id);
+  if (s) return res.json({ id: s.id, engine: s.engine || 'claude', title: s.title || '', cwd: s.cwd, model: s.model || '', permMode: s.permissionMode, events: [] });
+  res.status(404).json({ error: 'session not found' });
 });
 
 app.get('/api/dirs', (req, res) => {
