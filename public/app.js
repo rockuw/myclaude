@@ -388,7 +388,6 @@ function resetChat() {
   renderTaskPanel();
   $('#jump-bottom').classList.remove('show');
   $('#user-nav').classList.remove('show');
-  $('#messages-wrap').classList.remove('has-nav');
   updateComposerState();
 }
 function showLoading(text, sub) {
@@ -1007,9 +1006,8 @@ function updateUserNav() {
   const nav = $('#user-nav');
   if (!S) { nav.classList.remove('show'); return; }
   const tops = userRowTops();
-  if (!tops.length) { nav.classList.remove('show'); $('#messages-wrap').classList.remove('has-nav'); return; }
+  if (!tops.length) { nav.classList.remove('show'); return; }
   nav.classList.add('show');
-  $('#messages-wrap').classList.add('has-nav');
   const st = $('#messages').scrollTop;
   $('#nav-prev').disabled = !tops.some(t => t.top < st - 20);
   $('#nav-next').disabled = !tops.some(t => t.top > st + 20);

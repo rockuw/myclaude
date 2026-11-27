@@ -335,7 +335,7 @@ button.chip-mode:disabled { cursor: default; opacity: .8; }
 #user-nav.show { display: flex; }
 #user-nav button {
   width: 34px; height: 34px; border: var(--border); border-radius: 8px;
-  background: var(--paper); box-shadow: 2px 2px 0 var(--ink);
+  background: color-mix(in srgb, var(--paper) 85%, transparent); box-shadow: 2px 2px 0 var(--ink);
   font-size: 15px; font-weight: 700; color: var(--ink);
   transition: transform .08s ease, box-shadow .08s ease;
 }
@@ -468,7 +468,6 @@ button.chip-mode:disabled { cursor: default; opacity: .8; }
   .result-row { margin-left: 34px; font-size: 10px; gap: 8px; }
   #user-nav { top: 8px; right: 10px; gap: 8px; }
   #user-nav button { width: 40px; height: 40px; font-size: 17px; }
-  #messages-wrap.has-nav #messages { padding-right: 56px; }
   .sk-avatar { width: 26px; height: 26px; }
   .loading-card { padding: 10px 14px; gap: 10px; }
   .loading-text { font-size: 13px; }
