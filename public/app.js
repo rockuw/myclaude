@@ -315,6 +315,7 @@ function goHome() {
   if (current && !current.readOnly) sendWS({ t: 'detach', id: current.id });
   current = null; S = null;
   document.body.classList.remove('chatting');
+  updateTabTitle();
   refreshSessions();
 }
 function openActive(id) {
@@ -432,6 +433,17 @@ function appendBanner(kind, text) {
 }
 
 // ---------------- chat header / composer ----------------
+let baseTitle = 'myclaude';
+// The tab title doubles as a busy indicator across Chrome tabs: status emoji
+// first (survives title truncation), then machine, then session title.
+function updateTabTitle() {
+  if (!current) { document.title = baseTitle; return; }
+  const info = current.info || {};
+  const st = current.readOnly ? 'idle' : (info.status || 'idle');
+  const tag = st === 'running' ? '⏳' : st === 'waiting_permission' ? '🔔' : '💤';
+  const t = info.title || (current.meta && current.meta.title) || '';
+  document.title = tag + ' · ' + baseTitle + (t ? ' · ' + t : '');
+}
 function updateChatHeader() {
   if (!current) return;
   const info = current.info || {};
@@ -464,6 +476,7 @@ function updateChatHeader() {
   const ended = status === 'exited' || status === 'error';
   $('#btn-exit').textContent = (current.readOnly || ended) ? '▶ Resume' : '退出会话';
   updateComposerState();
+  updateTabTitle();
 }
 function updateComposerState() {
   const disabled = !current || current.readOnly || (current.info && (current.info.status === 'exited' || current.info.status === 'error'));
@@ -509,6 +522,7 @@ function setChatTitleFromText(text) {
   if (current && current.info && !current.info.title) current.info.title = t;
   if (current && !current.meta) current.meta = { title: t };
   $('#chat-title').textContent = (current && current.info && current.info.title) || t;
+  updateTabTitle();
 }
 
 function renderEvent(ev) {
@@ -1197,6 +1211,7 @@ connect();
 refreshSessions();
 fetch('/api/info').then(r => r.json()).then(d => {
   $('#host-badge').textContent = d.hostname || '';
-  if (d.hostname) document.title = d.hostname; // tab name identifies the machine
+  if (d.hostname) baseTitle = d.hostname; // tab name identifies the machine
+  updateTabTitle();
 }).catch(() => {});
 Promise.all([loadSettings(), loadCodexProfiles()]).then(() => { renderHome(); if (current) updateChatHeader(); }).catch(() => {});
