@@ -27,13 +27,23 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 app.get('/api/sessions', (req, res) => {
   const active = manager.activeInfos();
   const activeIds = new Set(active.map(s => s.id));
-  const hist = history.listSessions().map(h => ({ ...h, active: activeIds.has(h.id) }));
+  // a live codex session uses a myclaude uuid while its rollout is keyed by
+  // thread id — hide the history duplicate of the same conversation
+  const threadIds = new Set(active.map(s => s.codexThreadId).filter(Boolean));
+  const hist = history.listSessions()
+    .filter(h => !threadIds.has(h.id))
+    .map(h => ({ ...h, active: activeIds.has(h.id) }));
   res.json({ active, history: hist });
 });
 
 app.get('/api/sessions/:id/messages', (req, res) => {
   const data = history.getMessages(req.params.id);
   if (data) return res.json(data);
+  const meta = manager.meta[req.params.id];
+  if (meta && meta.codexThreadId) {
+    const byThread = history.getMessages(meta.codexThreadId);
+    if (byThread) return res.json({ ...byThread, id: req.params.id });
+  }
   // Freshly created sessions have no transcript file yet (the CLI writes it
   // after the first turn): serve empty history, the live attach replay covers it.
   const s = manager.sessions.get(req.params.id);

@@ -102,6 +102,7 @@ class Manager {
       id: s.id, cwd: s.cwd, settings: s.settingsFile, mode: s.permissionMode,
       status: s.status, model: s.model, title: s.title, createdAt: s.createdAt,
       engine: s.engine || 'claude',
+      codexThreadId: s.codexThreadId || null,
       resumed: s.resumed, pendingPermissions: [...s.pending.values()].map(p => ({ requestId: p.requestId, toolName: p.toolName })),
     };
   }
@@ -144,17 +145,24 @@ class Manager {
   resume({ id, settings, mode, cwd, force }) {
     const existing = this.sessions.get(id);
     if (existing && existing.status !== 'exited' && existing.status !== 'error') return existing;
-    const hist = history.getMessages(id);
+    let hist = history.getMessages(id);
+    // UI-created codex sessions use a myclaude uuid; the rollout is keyed by
+    // codex thread id, so fall back to the thread id recorded in meta.
+    if (!hist && this.meta[id] && this.meta[id].codexThreadId) hist = history.getMessages(this.meta[id].codexThreadId);
     if (!hist) throw new Error('找不到该历史会话: ' + id);
     if (hist.engine === 'codex') {
       const meta = this.meta[id] || {};
       const inferred = codex.listProfiles().find(p => p.model && hist.model && p.model === hist.model);
-      return this._createCodex({
+      const s = this._createCodex({
         id, settings: settings || meta.settings || (inferred && inferred.file) || 'default',
         cwd: cwd || meta.cwd || hist.cwd || os.homedir(),
         mode: mode || meta.mode || 'acceptEdits', resumed: true,
-        title: hist.title || meta.title, threadId: id,
+        title: hist.title || meta.title, threadId: meta.codexThreadId || id,
       });
+      // keep live result uuids (cxres_<turnSeq>) from colliding with the
+      // history rows already rendered for earlier turns
+      s.turnSeq = hist.events.filter(e => e.k === 'result').length;
+      return s;
     }
     // Safety: a transcript written seconds ago is likely live in another
     // terminal/process; resuming it would fork a running conversation.

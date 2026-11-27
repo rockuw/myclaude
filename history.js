@@ -53,6 +53,71 @@ function isHumanPrompt(d) {
 }
 
 // ---- codex session sources ----
+// codex >= 0.172 writes rollout items in PascalCase (AgentMessage, content
+// blocks) instead of snake_case (agent_message, .text); accept both.
+function normItemType(t) { return String(t || '').toLowerCase().replace(/_/g, ''); }
+function normModel(m) {
+  if (typeof m === 'string') return m;
+  if (m && typeof m === 'object' && typeof m.model === 'string') return m.model;
+  return '';
+}
+function itemText(it) {
+  if (typeof it.text === 'string' && it.text) return it.text;
+  if (Array.isArray(it.content)) return it.content.map(c => (c && c.text) || '').join('');
+  if (Array.isArray(it.summary_text)) return it.summary_text.map(s => typeof s === 'string' ? s : (s && s.text) || '').join('');
+  return '';
+}
+function cmdText(c) {
+  if (Array.isArray(c)) return (c.length === 3 && /^-(lc|c)$/.test(c[1] || '')) ? c[2] : c.join(' ');
+  return c || '';
+}
+// codex injects AGENTS.md / environment context as user-role messages; they are
+// not things the human typed.
+function isInjectedPrompt(t) {
+  const s = (t || '').trim();
+  return !s || s.startsWith('<') || /^#\s*AGENTS\.md instructions/i.test(s);
+}
+function modelFromPayload(p) {
+  return normModel(p.model) || normModel((p.thread_settings || {}).model) || normModel((p.state || {}).model);
+}
+
+// Stream the rollout head until cwd/model/first human prompt are found. The
+// first user message can sit >100KB in (system prompt + AGENTS.md injections),
+// so a fixed small head read misses it and leaves history titles empty.
+function scanRolloutHead(file, maxBytes = 2 * 1024 * 1024) {
+  const out = { cwd: '', model: '', firstPrompt: '' };
+  let fd;
+  try { fd = fs.openSync(file, 'r'); } catch { return out; }
+  try {
+    const size = fs.fstatSync(fd).size;
+    const limit = Math.min(size, maxBytes);
+    const CHUNK = 64 * 1024;
+    let pos = 0, carry = '';
+    while (pos < limit) {
+      const buf = Buffer.alloc(Math.min(CHUNK, limit - pos));
+      const n = fs.readSync(fd, buf, 0, buf.length, pos);
+      if (n <= 0) break;
+      pos += n;
+      carry += buf.slice(0, n).toString('utf8');
+      let i;
+      while ((i = carry.indexOf('\n')) >= 0) {
+        const line = carry.slice(0, i); carry = carry.slice(i + 1);
+        if (!line.trim()) continue;
+        let d; try { d = JSON.parse(line); } catch { continue; }
+        const p = d.payload || {};
+        if (d.type === 'session_meta') out.cwd = p.cwd || out.cwd;
+        if (!out.model) out.model = modelFromPayload(p);
+        if (!out.firstPrompt && d.type === 'response_item' && p.type === 'message' && p.role === 'user') {
+          const t = (p.content || []).map(c => c.text || '').join(' ').trim();
+          if (!isInjectedPrompt(t)) out.firstPrompt = t.replace(/\s+/g, ' ').slice(0, 60);
+        }
+        if (out.cwd && out.model && out.firstPrompt) return out;
+      }
+    }
+  } finally { fs.closeSync(fd); }
+  return out;
+}
+
 function codexRolloutIndex() {
   const map = new Map();
   const walk = (dir, depth) => {
@@ -90,25 +155,7 @@ function codexList(limit = 40) {
   const out = [];
   // exec threads never reach session_index.jsonl; the rollout scan is the source
   for (const [id, r] of rolls) {
-    let cwd = '', model = '', firstPrompt = '';
-    try {
-      const fd = fs.openSync(r.path, 'r');
-      const buf = Buffer.alloc(32768);
-      const n = fs.readSync(fd, buf, 0, 32768, 0);
-      fs.closeSync(fd);
-      for (const d of linesOf(buf.slice(0, n).toString('utf8'))) {
-        const p = d.payload || {};
-        if (d.type === 'session_meta') { cwd = p.cwd || ''; model = p.model || ''; }
-        // model lives in turn_context/world_state, not session_meta; first wins
-        // (later resumes may have recorded a different model)
-        if (!model) model = p.model || (p.thread_settings || {}).model || ((p.state || {}).model) || '';
-        if (!firstPrompt && d.type === 'response_item' && p.type === 'message' && p.role === 'user') {
-          const t = (p.content || []).map(c => c.text || '').join(' ').trim();
-          if (t && !t.startsWith('<')) firstPrompt = t.replace(/\s+/g, ' ').slice(0, 60);
-        }
-        if (cwd && firstPrompt) break;
-      }
-    } catch {}
+    const { cwd, model, firstPrompt } = scanRolloutHead(r.path);
     const j = idx.get(id) || {};
     out.push({
       id, engine: 'codex', dir: 'codex', cwd,
@@ -128,25 +175,41 @@ function getCodexMessages(id, file) {
   const push = ev => { events.push(ev); if (ev.uuid && ev.k !== 'result') lastUuid = ev.uuid; };
   for (const d of linesOf(text)) {
     const p = d.payload || {};
-    if (d.type === 'session_meta') { cwd = p.cwd || cwd; model = p.model || model; continue; }
-    if (!model) model = p.model || (p.thread_settings || {}).model || ((p.state || {}).model) || '';
+    if (d.type === 'session_meta') { cwd = p.cwd || cwd; model = normModel(p.model) || model; continue; }
+    if (!model) model = modelFromPayload(p);
     if (d.type === 'response_item' && p.type === 'message' && p.role === 'user') {
       const t = (p.content || []).map(c => c.text || '').join('\n');
-      if (!t.trim() || t.trim().startsWith('<')) continue;
+      if (isInjectedPrompt(t)) continue;
       if (!firstPrompt) firstPrompt = t.replace(/\s+/g, ' ').slice(0, 60);
       push({ k: 'user', uuid: 'cxu' + (p.id || events.length), content: t, ts: d.timestamp });
     } else if (d.type === 'event_msg' && p.type === 'item_completed') {
       const it = p.item || {};
-      if (it.type === 'agent_message') {
-        push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'text', text: it.text || '' }], ts: d.timestamp });
-      } else if (it.type === 'reasoning') {
-        push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'thinking', thinking: it.text || '' }], ts: d.timestamp });
-      } else if (it.type === 'command_execution') {
-        push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'tool_use', id: it.id, name: 'Bash', input: { command: it.command } }], ts: d.timestamp });
-        push({ k: 'user', uuid: 'cxr' + it.id, content: [{ type: 'tool_result', tool_use_id: it.id, content: it.aggregated_output || '', is_error: it.exit_code != null && it.exit_code !== 0 }], ts: d.timestamp });
-      } else if (it.type === 'file_change') {
-        push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'tool_use', id: it.id, name: 'Edit', input: { file_path: (it.changes || []).map(c => c.path || '').join(', ') } }], ts: d.timestamp });
-        push({ k: 'user', uuid: 'cxr' + it.id, content: [{ type: 'tool_result', tool_use_id: it.id, content: JSON.stringify(it.changes || {}, null, 2), is_error: false }], ts: d.timestamp });
+      const exitCode = it.exit_code == null ? null : Number(it.exit_code);
+      switch (normItemType(it.type)) {
+        case 'agentmessage': {
+          const txt = itemText(it);
+          if (txt) push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'text', text: txt }], ts: d.timestamp });
+          break;
+        }
+        case 'reasoning': {
+          const txt = itemText(it);
+          if (txt) push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'thinking', thinking: txt }], ts: d.timestamp });
+          break;
+        }
+        case 'commandexecution':
+          push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'tool_use', id: it.id, name: 'Bash', input: { command: cmdText(it.command) } }], ts: d.timestamp });
+          push({ k: 'user', uuid: 'cxr' + it.id, content: [{ type: 'tool_result', tool_use_id: it.id, content: it.aggregated_output || '', is_error: exitCode != null && exitCode !== 0 }], ts: d.timestamp });
+          break;
+        case 'filechange':
+          push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'tool_use', id: it.id, name: 'Edit', input: { file_path: (it.changes || []).map(c => c.path || c.file_path || '').join(', ') } }], ts: d.timestamp });
+          push({ k: 'user', uuid: 'cxr' + it.id, content: [{ type: 'tool_result', tool_use_id: it.id, content: JSON.stringify(it.changes || {}, null, 2), is_error: false }], ts: d.timestamp });
+          break;
+        case 'mcptoolcall':
+          push({ k: 'assistant', uuid: 'cx' + it.id, messageId: it.id, content: [{ type: 'tool_use', id: it.id, name: it.tool || it.name || 'mcp', input: it.arguments || it.input || {} }], ts: d.timestamp });
+          push({ k: 'user', uuid: 'cxr' + it.id, content: [{ type: 'tool_result', tool_use_id: it.id, content: it.output || '', is_error: it.status === 'failed' }], ts: d.timestamp });
+          break;
+        default:
+          break;
       }
     } else if (d.type === 'event_msg' && p.type === 'token_count') {
       lastUsage = ((p.info || {}).total_token_usage) || lastUsage;
