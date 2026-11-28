@@ -13,6 +13,7 @@ const app = express();
 const server = http.createServer(app);
 const manager = new Manager();
 
+app.use('/doc', require('./doc')); // before static: /doc/<name>.md is a viewer, not a raw file
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 

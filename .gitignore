@@ -4,3 +4,4 @@ server.log
 .playwright-cli/
 *.log
 public/img/
+public/doc/
